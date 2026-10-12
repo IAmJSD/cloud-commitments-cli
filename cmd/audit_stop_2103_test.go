@@ -61,7 +61,7 @@ func TestExecuteAndReport_AuditWriteFailureStopsFurtherPurchases(t *testing.T) {
 	assert.Positive(t, h.count("/DescribeSavingsPlans"), "the duplicate check ran before the purchase")
 	assert.Contains(t, out.String(), "missing or not durable")
 	assert.Contains(t, out.String(), "1 of 3")
-	assert.Contains(t, out.String(), "sp-111")
+	assert.Contains(t, out.String(), "(commitment sp-111)")
 	report, rerr := os.ReadFile(cfg.CSVOutput)
 	require.NoError(t, rerr)
 	assert.Contains(t, string(report), "sp-111", "the unaudited purchase still reaches the report")
@@ -160,4 +160,67 @@ func TestAuditWriteFailureOnDryRunDoesNotStop(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Len(t, results, 3)
+}
+
+// lockAuditAfterFirstPurchase makes the first CreateSavingsPlan call revoke
+// write access to the audit file and its directory, the real-shape failure.
+func lockAuditAfterFirstPurchase(t *testing.T, h *hookTransport, auditPath string) {
+	t.Helper()
+	inner := h.handle
+	h.handle = func(r *http.Request) (int, string) {
+		if strings.HasSuffix(r.URL.Path, "/CreateSavingsPlan") {
+			_ = os.Chmod(auditPath, 0o400)
+			_ = os.Chmod(filepath.Dir(auditPath), 0o500)
+			t.Cleanup(func() { _ = os.Chmod(filepath.Dir(auditPath), 0o700) })
+		}
+		return inner(r)
+	}
+}
+
+func TestRunCSVPurchases_AuditStopKeepsUnauditedPurchaseInReport(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("read-only permissions do not bind root")
+	}
+	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
+	out := captureAppLog(t)
+	cfg := auditCfg(t)
+	cfg.CSVOutput = filepath.Join(t.TempDir(), "report.csv")
+	h := spHook()
+	lockAuditAfterFirstPurchase(t, h, cfg.AuditLog)
+	recs := []common.Recommendation{offeringSP("o-1", 1), offeringSP("o-2", 2), offeringSP("o-3", 3)}
+
+	err := runCSVPurchases(context.Background(), hookedAWSConfig(h), recs, false, cfg, "run-1")
+
+	require.ErrorIs(t, err, errAuditTrailLost)
+	assert.Equal(t, 1, h.count("/CreateSavingsPlan"))
+	report, rerr := os.ReadFile(cfg.CSVOutput)
+	require.NoError(t, rerr)
+	assert.Contains(t, string(report), "sp-111", "the unaudited purchase must stay in the CSV report")
+	assert.Contains(t, out.String(), "1 of 3")
+	assert.Contains(t, out.String(), "(commitment sp-111)")
+}
+
+func TestRunCSVPurchases_AuditProbeFailureStopsBeforeBuying(t *testing.T) {
+	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
+	captureAppLog(t)
+	cfg := auditCfg(t)
+	orig := writeAuditRecordFn
+	writeAuditRecordFn = func(rec common.AuditRecord, path string) error {
+		if err := orig(rec, path); err != nil {
+			return err
+		}
+		if err := os.Rename(path, path+".1"); err != nil {
+			return err
+		}
+		return os.Mkdir(path, 0o755)
+	}
+	t.Cleanup(func() { writeAuditRecordFn = orig })
+	h := spHook()
+	recs := []common.Recommendation{offeringSP("o-1", 1), offeringSP("o-2", 2)}
+
+	err := runCSVPurchases(context.Background(), hookedAWSConfig(h), recs, false, cfg, "run-1")
+
+	require.ErrorIs(t, err, errAuditTrailLost)
+	assert.Contains(t, err.Error(), "probe")
+	assert.Equal(t, 1, h.count("/CreateSavingsPlan"), "purchase 2 must never be sent")
 }
