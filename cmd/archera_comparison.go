@@ -166,7 +166,7 @@ func archeraFold(s string) string { return strings.ToLower(norm.NFKD.String(s)) 
 
 // archeraKeyReadable reports whether msg shows min(len(key), archeraFragmentLen)
 // consecutive key characters, in order, with at most archeraMaxGap other
-// characters between neighbours. Both sides are folded, and msg is reduced to
+// characters between neighbors. Both sides are folded, and msg is reduced to
 // the runes that occur in the key, so any inserted character class drops out.
 // The key's own non-graphic and space runes are ignored, as the reader does.
 func archeraKeyReadable(msg, key string) bool {
@@ -194,7 +194,7 @@ func archeraKeyReadable(msg, key string) bool {
 }
 
 // archeraHasGappedRun reports whether run occurs in ms as a subsequence with
-// at most archeraMaxGap skipped runes between neighbours. Gap 0 is a plain
+// at most archeraMaxGap skipped runes between neighbors. Gap 0 is a plain
 // substring match.
 func archeraHasGappedRun(ms, run []rune) bool {
 	var cur []int
