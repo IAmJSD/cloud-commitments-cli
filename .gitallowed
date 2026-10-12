@@ -67,3 +67,16 @@
 # One letter of "PRIVATE" is bracketed for the same self-scan reason the
 # block above explains -- do not tidy it back to a bare word.
 ^[^:]+:[0-9]+:[[:space:]]*("private_key"|PrivateKey):[[:space:]]*"-----BEGIN PRIVAT[E] KEY-----\\n(MIIEvQIBADANBg)?\.\.\.(\\n)?",?$
+
+# Benign lines the setup script's 40-character-run detector and PEM
+# detector flag in this repo's tree: separator rules and box-drawing log
+# banners (no letters or digits), and truncated or placeholder PEM literals
+# in two test files. Each is anchored on path and the entire line, with a
+# bracketed letter in PRIVAT[E] for the same self-scan reason as above.
+^(SECURITY\.md|\.github/workflows/README\.md):[0-9]+:\|[-| ]+\|$
+^cmd/[a-z_]+\.go:[0-9]+:[[:space:]]*(fmt|AppLogger)\.Println\("-+"\)$
+^cmd/multi_service(_helpers)?\.go:[0-9]+:[[:space:]]*AppLogger\.Printf\("(\\n)?(━)+\\n"\)$
+^cmd/configure_gcp_test\.go:[0-9]+:// --- addMemberToPolicyBinding -+$
+^cmd/configure_test\.go:[0-9]+:[[:space:]]*assert\.Equal\(t, "-----BEGIN PRIVAT[E] KEY-----\\n\.\.\.", creds\.PrivateKey\)$
+^cmd/configure_test\.go:[0-9]+:[[:space:]]*"private_key": "-----BEGIN PRIVAT[E] KEY-----\\nMIIEvQIBADANBg\.\.\.\\n-----END PRIVATE KEY-----\\n",$
+^cmd/configure_gcp_test\.go:[0-9]+:[[:space:]]*keyMaterial := \[\]byte\(`\{"type":"service_account","project_id":"proj","client_email":"sa@proj\.iam\.gserviceaccount\.com","private_key":"-----BEGIN PRIVAT[E] KEY-----\\nx\\n-----END PRIVATE KEY-----\\n"\}`\)$

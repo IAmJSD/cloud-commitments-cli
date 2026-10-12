@@ -120,7 +120,7 @@ run_case "untruncated PKCS8 body" 1 e.json \
 run_case "corrected GCP API key range" 1 f.txt \
     "$AIZA"
 run_case "password with real spaces around the separator" 1 n.txt \
-    'password = "hunter2hunter2"'
+    'pass''word = "hunter2hunter2"'
 run_case "secret before an otherwise-allowed truncated PEM, same line" 1 l.go \
     'k := "'"$KEY"'"; PrivateKey: "'"$PEM"'\n...",'
 run_case "secret after an otherwise-allowed truncated PEM, same line" 1 m.go \
@@ -185,7 +185,7 @@ ACCT="1234""56789012"
 run_case "account-id placeholder with a key on the same line" 1 o.go \
     'accountId := "'"$ACCT"'"; k := "'"$KEY"'"'
 run_case "UUID placeholder with a password on the same line" 1 p.go \
-    'id := "11111111-1111-1111-1111-111111111111"; password = "hunter2hunter2"'
+    'id := "11111111-1111-1111-1111-111111111111"; pass''word = "hunter2hunter2"'
 
 echo "$pass PASS, $fail FAIL"
 [ "$fail" -eq 0 ]
