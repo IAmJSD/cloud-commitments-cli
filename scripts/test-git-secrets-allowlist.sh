@@ -186,6 +186,10 @@ run_case "account-id placeholder with a key on the same line" 1 o.go \
     'accountId := "'"$ACCT"'"; k := "'"$KEY"'"'
 run_case "UUID placeholder with a password on the same line" 1 p.go \
     'id := "11111111-1111-1111-1111-111111111111"; pass''word = "hunter2hunter2"'
+# A secret appended to an otherwise-allowed account-ID fixture line stays caught.
+run_case "key appended to an allowed account-ID fixture line" 1 \
+    cmd/helpers_test.go \
+    '			accountID: "123456789012", k := "'"$KEY"'"'
 
 echo "$pass PASS, $fail FAIL"
 [ "$fail" -eq 0 ]
