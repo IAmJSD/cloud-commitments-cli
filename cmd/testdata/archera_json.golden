@@ -44,6 +44,13 @@
           "actual_payment_option": "partial_upfront",
           "actual_commitment_type": "aws/AmazonEC2[31m",
           "reason": "fallback_closest_shorter"
+        },
+        {
+          "line_item_id": "61000000-0000-4000-8000-0000000000b3",
+          "actual_term": "one_year_gris",
+          "actual_payment_option": "all_upfront",
+          "actual_commitment_type": "aws/AmazonRDS",
+          "reason": "exact_match"
         }
       ]
     },
@@ -71,6 +78,40 @@
           "actual_payment_option": null,
           "actual_commitment_type": null,
           "reason": "no_alternative"
+        }
+      ]
+    },
+    {
+      "contract_term": "twelve_month_gris",
+      "payment_option": "partial_upfront",
+      "totals": {
+        "monthly_rate_730h": {
+          "commitment_cost_total": "901",
+          "cloud_provider_cost": "902",
+          "premium": "903",
+          "gross_savings": "904",
+          "net_savings": "905",
+          "covered_on_demand_cost": "906"
+        },
+        "upfront_cost_one_time": "907"
+      },
+      "delta_monthly_net_savings": "908",
+      "delta_monthly_commitment_cost": "909",
+      "delta_upfront_cost": "910",
+      "line_items": [
+        {
+          "line_item_id": "90000000-0000-4000-8000-0000000000d1",
+          "actual_term": "twelve_month_gris",
+          "actual_payment_option": "all_upfront",
+          "actual_commitment_type": "aws/AmazonRDS",
+          "reason": "exact_match"
+        },
+        {
+          "line_item_id": "90000000-0000-4000-8000-0000000000d2",
+          "actual_term": "three_month_gris",
+          "actual_payment_option": "no_upfront",
+          "actual_commitment_type": "aws/AmazonElastiCache",
+          "reason": "bundle_member"
         }
       ]
     }
@@ -177,6 +218,77 @@
             "upfront_cost": "509",
             "discount_rate": "0.52",
             "breakeven_days": null
+          },
+          "archera_product_support": {
+            "status": "unknown"
+          }
+        }
+      ]
+    },
+    {
+      "line_item_id": "71000000-0000-4000-8000-0000000000c2",
+      "current": {
+        "is_current": true,
+        "offer_id": "70000000-0000-4000-8000-000000000004",
+        "commitment_type": "aws/AmazonRDS",
+        "provider": "aws",
+        "region": "us-west-2",
+        "contract_term": null,
+        "payment_option": null,
+        "lease_attached": false,
+        "archera_offer_name": "Row Two Current",
+        "discount_rate": "0.71",
+        "breakeven_days": "71",
+        "totals": {
+          "monthly_rate_730h": {
+            "commitment_cost_total": "701",
+            "cloud_provider_cost": "702",
+            "premium": "703",
+            "gross_savings": "704",
+            "net_savings": "705",
+            "covered_on_demand_cost": "706"
+          },
+          "upfront_cost_one_time": "707"
+        },
+        "delta_vs_current": {
+          "monthly_net_savings": "708",
+          "upfront_cost": "709",
+          "discount_rate": "0.72",
+          "breakeven_days": "72"
+        },
+        "archera_product_support": {
+          "status": "unknown"
+        }
+      },
+      "candidates": [
+        {
+          "is_current": false,
+          "offer_id": "80000000-0000-4000-8000-000000000005",
+          "commitment_type": "aws/AmazonElastiCache",
+          "provider": "aws",
+          "region": "ca-central-1",
+          "contract_term": "three_month_gris",
+          "payment_option": "partial_upfront",
+          "lease_attached": false,
+          "archera_offer_name": null,
+          "discount_rate": "0.81",
+          "breakeven_days": "81",
+          "totals": {
+            "monthly_rate_730h": {
+              "commitment_cost_total": "801",
+              "cloud_provider_cost": "802",
+              "premium": "803",
+              "gross_savings": "804",
+              "net_savings": "805",
+              "covered_on_demand_cost": "806"
+            },
+            "upfront_cost_one_time": "807"
+          },
+          "delta_vs_current": {
+            "monthly_net_savings": "808",
+            "upfront_cost": "809",
+            "discount_rate": "0.82",
+            "breakeven_days": "82"
           },
           "archera_product_support": {
             "status": "unknown"

@@ -81,11 +81,7 @@ func runArcheraComparison(cmd *cobra.Command, _ []string) error {
 	}
 	comparison, err := client.Comparison(cmd.Context(), insurance.ComparisonRequest{PlanID: planID})
 	if err != nil {
-		var httpErr *insurance.HTTPError
-		if errors.As(err, &httpErr) && httpErr.RetryAfter > 0 {
-			return fmt.Errorf("%w (retry after %s; not retried automatically)", err, httpErr.RetryAfter)
-		}
-		return err
+		return archeraSafeError(err)
 	}
 	dto := buildArcheraDTO(comparison)
 	if format == "json" {
@@ -110,4 +106,17 @@ func archeraSettings() (key, orgID, planID string, err error) {
 		return "", "", "", fmt.Errorf("archera plan ID is not set (--plan-id or %s)", archeraEnvPlanID)
 	}
 	return key, orgID, planID, nil
+}
+
+// archeraSafeError renders a client error as bounded, terminal-safe text.
+// HTTP errors keep their sanitized message and Retry-After. Other errors
+// (decode failures echo the rejected vendor value) are stripped of control
+// and format characters and capped, because their text is vendor-controlled.
+func archeraSafeError(err error) error {
+	msg := err.Error()
+	var httpErr *insurance.HTTPError
+	if errors.As(err, &httpErr) && httpErr.RetryAfter > 0 {
+		msg = fmt.Sprintf("%s (retry after %s; not retried automatically)", msg, httpErr.RetryAfter)
+	}
+	return errors.New(archeraSanitizeN(msg, archeraMaxErrorSize))
 }

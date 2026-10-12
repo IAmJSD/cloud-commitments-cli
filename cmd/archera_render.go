@@ -23,19 +23,24 @@ const (
 		"The API exposes no per-line product support or allowance verdict, so product support and allowance are shown as unknown unless Archera's documentation says otherwise."
 	archeraPremiumNote  = "Totals include the Archera premium. The API reports no currency, so amounts are unlabelled."
 	archeraMaxFieldSize = 256
+	archeraMaxErrorSize = 512
 	archeraMaxMoneyPrec = 100
 )
 
 // archeraSanitize strips control characters (ESC, C1 and the rest of
-// unicode.IsControl) from a vendor string and caps it at archeraMaxFieldSize
-// bytes on a rune boundary, so it is safe to print to a terminal.
-func archeraSanitize(s string) string {
+// unicode.IsControl), format characters (bidi overrides, zero-width) and line
+// or paragraph separators from a vendor string and caps it at
+// archeraMaxFieldSize bytes on a rune boundary, so it is safe to print to a
+// terminal.
+func archeraSanitize(s string) string { return archeraSanitizeN(s, archeraMaxFieldSize) }
+
+func archeraSanitizeN(s string, maxBytes int) string {
 	var b strings.Builder
 	for _, r := range s {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
 			continue
 		}
-		if b.Len()+utf8.RuneLen(r) > archeraMaxFieldSize {
+		if b.Len()+utf8.RuneLen(r) > maxBytes {
 			break
 		}
 		b.WriteRune(r)

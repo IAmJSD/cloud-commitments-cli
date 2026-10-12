@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -113,18 +114,47 @@ func runArchera(t *testing.T, env map[string]string, args ...string) (stdout, st
 		t.Setenv(k, v)
 	}
 	resetHelpFlags()
-	savedLocal := time.Local
-	time.Local = time.FixedZone("archera-test", 5*3600+1800)
-	t.Cleanup(func() { time.Local = savedLocal })
 	archeraOpts.OrgID, archeraOpts.PlanID, archeraOpts.Format = "", "", "table"
 	var out, errb bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errb)
 	rootCmd.SetArgs(append([]string{"archera-comparison"}, args...))
 	t.Cleanup(func() { rootCmd.SetOut(nil); rootCmd.SetErr(nil); rootCmd.SetArgs(nil) })
-	err = rootCmd.Execute()
-	return out.String(), errb.String(), err
+	realOut, realErr := captureRealStd(t, func() { err = rootCmd.Execute() })
+	// Anything the command wrote to the real process streams is returned with
+	// the cobra stderr so every caller's key grep covers it.
+	return out.String(), errb.String() + realOut + realErr, err
 }
+
+// captureRealStd swaps os.Stdout and os.Stderr for pipes while fn runs, so a
+// write that bypasses cobra's buffers is still observed.
+func captureRealStd(t *testing.T, fn func()) (stdout, stderr string) {
+	t.Helper()
+	savedOut, savedErr := os.Stdout, os.Stderr
+	outR, outW, err := os.Pipe()
+	require.NoError(t, err)
+	errR, errW, err := os.Pipe()
+	require.NoError(t, err)
+	var outBuf, errBuf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = io.Copy(&outBuf, outR) }()
+	go func() { defer wg.Done(); _, _ = io.Copy(&errBuf, errR) }()
+	os.Stdout, os.Stderr = outW, errW
+	func() {
+		defer func() { os.Stdout, os.Stderr = savedOut, savedErr }()
+		fn()
+	}()
+	require.NoError(t, outW.Close())
+	require.NoError(t, errW.Close())
+	wg.Wait()
+	return outBuf.String(), errBuf.String()
+}
+
+// The test binary runs in a non-UTC zone from the start, so a fetch time
+// printed in local time but labeled Z is visible. Set here, before any
+// goroutine exists, because time.Local is read concurrently by net/http.
+func init() { time.Local = time.FixedZone("archera-test", 5*3600+1800) }
 
 func fullEnv() map[string]string {
 	return map[string]string{archeraEnvAPIKey: archeraTestKey, archeraEnvOrgID: archeraTestOrg, archeraEnvPlanID: archeraTestPlan}
@@ -151,15 +181,15 @@ func TestArcheraComparisonIncompleteConfig(t *testing.T) {
 		env     map[string]string
 		wantMsg string
 	}{
-		{"no key", map[string]string{archeraEnvOrgID: archeraTestOrg, archeraEnvPlanID: archeraTestPlan}, archeraEnvAPIKey},
-		{"no org", map[string]string{archeraEnvAPIKey: archeraTestKey, archeraEnvPlanID: archeraTestPlan}, "org ID"},
-		{"no plan", map[string]string{archeraEnvAPIKey: archeraTestKey, archeraEnvOrgID: archeraTestOrg}, "plan ID"},
+		{"no key", map[string]string{archeraEnvOrgID: archeraTestOrg, archeraEnvPlanID: archeraTestPlan}, "ARCHERA_API_KEY is not set (read from the environment only)"},
+		{"no org", map[string]string{archeraEnvAPIKey: archeraTestKey, archeraEnvPlanID: archeraTestPlan}, "archera org ID is not set (--org-id or ARCHERA_ORG_ID)"},
+		{"no plan", map[string]string{archeraEnvAPIKey: archeraTestKey, archeraEnvOrgID: archeraTestOrg}, "archera plan ID is not set (--plan-id or ARCHERA_PLAN_ID)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out, errOut, err := runArchera(t, tc.env)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.wantMsg)
+			assert.Equal(t, tc.wantMsg, err.Error())
 			assert.NotContains(t, out+errOut+err.Error(), archeraTestKey)
 		})
 	}
@@ -175,7 +205,7 @@ func TestArcheraComparisonBadFormat(t *testing.T) {
 var archeraFetchedRE = regexp.MustCompile(`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)`)
 
 // assertArcheraFetchedUTC proves the printed fetch time is the current instant
-// in UTC. runArchera shifts time.Local, so a local-zone time mislabelled "Z"
+// in UTC. runArchera shifts time.Local, so a local-zone time mislabeled "Z"
 // would be hours off.
 func assertArcheraFetchedUTC(t *testing.T, got string) {
 	t.Helper()
@@ -193,8 +223,8 @@ func assertArcheraFetchedUTC(t *testing.T, got string) {
 func assertArcheraNoControlChars(t *testing.T, out string) {
 	t.Helper()
 	for _, r := range out {
-		if r != '\n' && unicode.IsControl(r) {
-			t.Fatalf("control character %U in output", r)
+		if r != '\n' && (unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)) {
+			t.Fatalf("control or format character %U in output", r)
 		}
 	}
 	for _, esc := range []string{`\u001b`, `\u0085`, `\u009b`} {
@@ -352,7 +382,7 @@ func TestArcheraNoKeyFlagAndStructsRedacted(t *testing.T) {
 // fields the decoder would reject (enums, UUIDs, terms) still carry control
 // characters into the DTO.
 func TestArcheraDTOSanitizesEveryVendorString(t *testing.T) {
-	dirty := func(s string) string { return s + "\x1b[31m\u0085\u009b" }
+	dirty := func(s string) string { return s + "\x1b[31m\u0085\u009b\u202e\u200b\u2028\u2029" }
 	str := func(s string) *string { v := dirty(s); return &v }
 	pay := insurance.PaymentOption(dirty("no_upfront"))
 	entry := func(id string) insurance.OfferEntry {
@@ -382,4 +412,49 @@ func TestArcheraDTOSanitizesEveryVendorString(t *testing.T) {
 	require.NoError(t, renderArcheraTable(&buf, dto))
 	assertArcheraNoControlChars(t, buf.String())
 	assert.Equal(t, "plan[31m", dto.PlanID)
+	require.NotNil(t, dto.Currency)
+	assert.Equal(t, "usd[31m", *dto.Currency)
+	buf.Reset()
+	require.NoError(t, renderArcheraJSON(&buf, dto))
+	assert.Contains(t, buf.String(), `"currency": "usd[31m"`)
+}
+
+func TestArcheraFlagsOverrideEnvironment(t *testing.T) {
+	rec := setupArchera(t, okHandler)
+	flagOrg := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	flagPlan := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	_, _, err := runArchera(t, fullEnv(), "--org-id", flagOrg, "--plan-id", flagPlan)
+	require.NoError(t, err)
+	require.Len(t, rec.requests, 1)
+	assert.Equal(t, "/v1/org/"+flagOrg+"/commitment-plans/"+flagPlan+"/comparison", rec.requests[0].URL.Path)
+}
+
+// Decode errors from pkg/insurance echo the rejected vendor value, so the
+// command must bound and clean them.
+func TestArcheraDecodeErrorsAreBoundedAndClean(t *testing.T) {
+	hostile := strings.Repeat("X", 5000) + `\u001b[31m\u202e`
+	paths := map[string]string{
+		"hypothetical payment_option":  `"payment_option":"no_upfront"`,
+		"hypothetical contract_term":   `"contract_term":"one_year_gris"`,
+		"line item actual_term":        `"actual_term":"six_month_gris"`,
+		"line item actual payment":     `"actual_payment_option":"partial_upfront"`,
+		"line item actual_term_reason": `"actual_term_reason":"fallback_closest_shorter"`,
+		"offer contract_term":          `"contract_term":"six_month_gris"`,
+		"offer payment_option":         `"payment_option":"all_upfront"`,
+	}
+	for name, field := range paths {
+		t.Run(name, func(t *testing.T) {
+			key := field[:strings.Index(field, `":`)+2]
+			body := strings.Replace(archeraComparisonFixture(), field, key+`"`+hostile+`"`, 1)
+			require.NotEqual(t, archeraComparisonFixture(), body)
+			setupArchera(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
+			out, errOut, err := runArchera(t, fullEnv())
+			require.Error(t, err)
+			assert.LessOrEqual(t, len(err.Error()), archeraMaxErrorSize)
+			assert.NotContains(t, err.Error(), strings.Repeat("X", 600))
+			assertArcheraNoControlChars(t, err.Error())
+			assert.Empty(t, out)
+			assert.NotContains(t, out+errOut+err.Error(), archeraTestKey)
+		})
+	}
 }

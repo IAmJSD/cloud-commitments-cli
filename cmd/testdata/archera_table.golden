@@ -10,11 +10,18 @@ Hypothetical 1: term one_year_gris, payment no_upfront
   totals: commitment cost 201, cloud provider cost 202, premium 203, gross savings 204, net savings 205, covered on-demand 206 (730-hour monthly rate); upfront 207 (one-time)
   delta vs current: monthly net savings 208, monthly commitment cost 209, upfront 210
   line item 60000000-0000-4000-8000-0000000000b1[31m: term six_month_gris, payment partial_upfront, type aws/AmazonEC2[31m, reason fallback_closest_shorter
+  line item 61000000-0000-4000-8000-0000000000b3: term one_year_gris, payment all_upfront, type aws/AmazonRDS, reason exact_match
 
 Hypothetical 2: term unknown, payment all_upfront
   totals: commitment cost 601, cloud provider cost 602, premium 603, gross savings 604, net savings 605, covered on-demand 606 (730-hour monthly rate); upfront 607 (one-time)
   delta vs current: monthly net savings 608, monthly commitment cost 609, upfront 610
   line item 60000000-0000-4000-8000-0000000000b2: term unknown, payment unknown, type unknown, reason no_alternative
+
+Hypothetical 3: term twelve_month_gris, payment partial_upfront
+  totals: commitment cost 901, cloud provider cost 902, premium 903, gross savings 904, net savings 905, covered on-demand 906 (730-hour monthly rate); upfront 907 (one-time)
+  delta vs current: monthly net savings 908, monthly commitment cost 909, upfront 910
+  line item 90000000-0000-4000-8000-0000000000d1: term twelve_month_gris, payment all_upfront, type aws/AmazonRDS, reason exact_match
+  line item 90000000-0000-4000-8000-0000000000d2: term three_month_gris, payment no_upfront, type aws/AmazonElastiCache, reason bundle_member
 
 Line item 70000000-0000-4000-8000-0000000000c1[31m
   current offer 30000000-0000-4000-8000-000000000001[31m: aws aws/AmazonEC2, region us-east-1[31m, term unknown, payment unknown
@@ -32,6 +39,19 @@ Line item 70000000-0000-4000-8000-0000000000c1[31m
     discount rate 0.51 (0-1 basis), breakeven days unknown
     commitment cost 501, cloud provider cost 502, premium 503, gross savings 504, net savings unknown, covered on-demand 506 (730-hour monthly rate); upfront 507 (one-time)
     delta vs current: monthly net savings 508, upfront 509, discount rate 0.52, breakeven days unknown
+    Archera product support: unknown
+
+Line item 71000000-0000-4000-8000-0000000000c2
+  current offer 70000000-0000-4000-8000-000000000004: aws aws/AmazonRDS, region us-west-2, term unknown, payment unknown
+    Archera offer name: Row Two Current
+    discount rate 0.71 (0-1 basis), breakeven days 71
+    commitment cost 701, cloud provider cost 702, premium 703, gross savings 704, net savings 705, covered on-demand 706 (730-hour monthly rate); upfront 707 (one-time)
+    delta vs current: monthly net savings 708, upfront 709, discount rate 0.72, breakeven days 72
+    Archera product support: unknown
+  candidate offer 80000000-0000-4000-8000-000000000005: aws aws/AmazonElastiCache, region ca-central-1, term three_month_gris, payment partial_upfront
+    discount rate 0.81 (0-1 basis), breakeven days 81
+    commitment cost 801, cloud provider cost 802, premium 803, gross savings 804, net savings 805, covered on-demand 806 (730-hour monthly rate); upfront 807 (one-time)
+    delta vs current: monthly net savings 808, upfront 809, discount rate 0.82, breakeven days 82
     Archera product support: unknown
 
 This is entirely optional. CUDly's purchase and management features work fully without Archera.
