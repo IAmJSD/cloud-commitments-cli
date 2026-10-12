@@ -46,7 +46,6 @@ func (r *ec2FormRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func zonalEC2Rec(scope ec2types.Scope, az string) common.Recommendation {
 	rec := validEC2Rec()
-	rec.Account = "111111111111"
 	rec.Term = "1yr"
 	rec.PaymentOption = "partial-upfront"
 	rec.Details = &common.ComputeDetails{InstanceType: "m5.large", Platform: "Linux/UNIX", Tenancy: "default",
