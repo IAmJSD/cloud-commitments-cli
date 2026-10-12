@@ -42,6 +42,8 @@ type rdsExpiryRI struct {
 	multiAZ       bool
 	count         int
 	endDays       int
+	// startedDaysAgo overrides the derived start (one year before endDays).
+	startedDaysAgo int
 }
 
 // rdsExpiryRec is one Cost Explorer purchase recommendation row (one linked
@@ -64,6 +66,8 @@ type rdsExpiryScenario struct {
 	want     []int
 	existing float64
 	unusable int
+	// logLine, when set, must appear in the run log.
+	logLine string
 	// parent documents the count the commit before the fix produced.
 	parent []int
 }
@@ -162,6 +166,36 @@ func rdsExpiryCase(name string) rdsExpiryScenario {
 			ris:   []rdsExpiryRI{{class: "db.r6g.large", engine: "postgres", count: 16, endDays: 15}},
 			recs:  one("db.r6g.large", 8), want: []int{8}, existing: 40, parent: []int{8},
 		}
+	case "rerun-replacement-bought":
+		// Re-run after the CLI already bought the replacements (cli#2175 gate F1).
+		// Lagged coverage is 82.5% (66 NU): 12 large owned by another account (not
+		// in the inventory), the 4 expiring, and part of the 4 replacements bought
+		// 2 days ago (outside the 24h idempotency window). True post-expiry
+		// coverage is 12 + 4 replacements = 16 large = 64 NU = 80%, so nothing is
+		// bought. Before the lookback-aware call the lagged coverage lost the 16
+		// expiring NU and 3 large were bought again.
+		return rdsExpiryScenario{
+			usage: []rdsExpiryUsage{mysql("db.r6g.large", 20, 82.5)},
+			ris: []rdsExpiryRI{
+				ri("db.r6g.large", 4, 15),
+				{class: "db.r6g.large", engine: "mysql", count: 4, endDays: 363, startedDaysAgo: 2},
+			},
+			recs: one("db.r6g.large", 8), want: []int{0}, parent: []int{3},
+			logLine: "16 normalized units of RIs expiring within 30 days considered against family coverage; 16 units of replacement RIs started in the last 30 days credited back",
+		}
+	case "control-replacement-outside-lookback":
+		// Same inventory but the replacements started 45 days ago, outside the
+		// 30-day coverage lookback, so they are already inside the coverage
+		// figure and must not be credited again: 66 - 16 = 50 NU (62.5%), the
+		// 17.5% gap (14 NU) buys 3 large.
+		return rdsExpiryScenario{
+			usage: []rdsExpiryUsage{mysql("db.r6g.large", 20, 82.5)},
+			ris: []rdsExpiryRI{
+				ri("db.r6g.large", 4, 15),
+				{class: "db.r6g.large", engine: "mysql", count: 4, endDays: 320, startedDaysAgo: 45},
+			},
+			recs: one("db.r6g.large", 8), want: []int{3}, existing: 62.5, parent: []int{3},
+		}
 	}
 	panic("unknown rds expiry scenario: " + name)
 }
@@ -170,6 +204,7 @@ func TestRDSFamilyExpiryCommand(t *testing.T) {
 	for _, name := range []string{
 		"already-at-target", "below-target", "large-ri-xlarge-usage", "multi-size-linked-accounts",
 		"partial-inventory", "unusable-expiring-warned", "control-outside-window", "control-engine-isolation",
+		"rerun-replacement-bought", "control-replacement-outside-lookback",
 	} {
 		t.Run(name, func(t *testing.T) { runCompletenessScenario(t, rdsExpiryService, "explicit", name) })
 	}
@@ -182,7 +217,15 @@ func rdsExpiryArgs(string) []string {
 func assertRDSExpiryCSV(t *testing.T, output, name, logs string) {
 	t.Helper()
 	s := rdsExpiryCase(name)
+	if s.logLine != "" {
+		require.Contains(t, logs, s.logLine)
+	}
 	data, err := os.ReadFile(output)
+	if countNonZero(s.want) == 0 {
+		require.ErrorIs(t, err, os.ErrNotExist, "nothing to buy must write no CSV; logs=%s", logs)
+		require.Contains(t, logs, "0 recommendations selected", logs)
+		return
+	}
 	require.NoError(t, err, logs)
 	rows, err := csv.NewReader(bytes.NewReader(data)).ReadAll()
 	require.NoError(t, err)
@@ -313,6 +356,9 @@ func rdsExpiryInventory(s rdsExpiryScenario) string {
 	for i, ri := range s.ris {
 		// A one-year reservation ending endDays from now.
 		start := time.Now().AddDate(0, 0, ri.endDays-365).UTC().Format(time.RFC3339)
+		if ri.startedDaysAgo > 0 {
+			start = time.Now().AddDate(0, 0, -ri.startedDaysAgo).UTC().Format(time.RFC3339)
+		}
 		fmt.Fprintf(&items, `<ReservedDBInstance><ReservedDBInstanceId>rds-expiry-%d</ReservedDBInstanceId><DBInstanceClass>%s</DBInstanceClass><ProductDescription>%s</ProductDescription><MultiAZ>%t</MultiAZ><DBInstanceCount>%d</DBInstanceCount><State>active</State><StartTime>%s</StartTime><Duration>31536000</Duration></ReservedDBInstance>`,
 			i, ri.class, ri.engine, ri.multiAZ, ri.count, start)
 	}

@@ -51,10 +51,7 @@ func fetchExistingCoverage(ctx context.Context, awsCfg aws.Config, recClient pro
 		// not subject to the fail-closed behavior below.
 		return nil, nil
 	}
-	lookbackDays := cfg.CoverageLookbackDays
-	if lookbackDays <= 0 {
-		lookbackDays = 30
-	}
+	lookbackDays := coverageLookbackDays(cfg)
 	regions := cfg.Regions
 	if len(regions) == 0 {
 		allRegions, err := getAllAWSRegions(ctx, awsCfg)
@@ -1058,4 +1055,13 @@ func exitOnExclusionError(err error) {
 	if err != nil {
 		log.Fatalf("Cannot apply extended-support exclusion: %v", err)
 	}
+}
+
+// coverageLookbackDays is the Cost Explorer coverage lookback: the one value
+// given to GetRICoverageMap and to the RDS family sizing, which must agree.
+func coverageLookbackDays(cfg Config) int {
+	if cfg.CoverageLookbackDays <= 0 {
+		return 30
+	}
+	return cfg.CoverageLookbackDays
 }
