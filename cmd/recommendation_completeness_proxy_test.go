@@ -62,7 +62,7 @@ func newCompletenessProxy(t *testing.T, dir, regions, details, service string) (
 		KeyUsage:    x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
-	if service == "ec2" {
+	if service == "ec2" || service == rdsExpiryService {
 		template.DNSNames = append(template.DNSNames, "organizations.us-east-1.amazonaws.com")
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
@@ -84,7 +84,7 @@ func (p *completenessProxy) serveConnect(w http.ResponseWriter, r *http.Request)
 	p.handlers.Add(1)
 	defer p.handlers.Done()
 	allowed := r.Host == "ce.us-east-1.amazonaws.com:443" || r.Host == "ec2.us-east-1.amazonaws.com:443" || r.Host == "rds.us-east-1.amazonaws.com:443" || r.Host == "savingsplans.amazonaws.com:443"
-	allowed = allowed || (p.service == "ec2" && r.Host == "organizations.us-east-1.amazonaws.com:443")
+	allowed = allowed || ((p.service == "ec2" || p.service == rdsExpiryService) && r.Host == "organizations.us-east-1.amazonaws.com:443")
 	if r.Method != http.MethodConnect || !allowed {
 		p.t.Errorf("unexpected CONNECT %s %s", r.Method, r.Host)
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -141,6 +141,9 @@ func (p *completenessProxy) respond(req *http.Request) *http.Response {
 	}
 	if p.service == "ec2" {
 		return p.respondReservationExpiry(req, body)
+	}
+	if p.service == rdsExpiryService {
+		return p.respondRDSExpiry(req, body)
 	}
 	op := req.Header.Get("X-Amz-Target")
 	if req.Host == "savingsplans.amazonaws.com" && op == "" {
@@ -251,6 +254,10 @@ func (p *completenessProxy) assertRequests(t *testing.T) {
 	defer p.mu.Unlock()
 	if p.service == "ec2" {
 		p.assertReservationExpiryRequests(t)
+		return
+	}
+	if p.service == rdsExpiryService {
+		p.assertRDSExpiryRequests(t)
 		return
 	}
 	if p.service != "rds" {

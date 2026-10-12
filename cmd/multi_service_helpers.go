@@ -469,6 +469,8 @@ func processRegionRecommendations(
 	// fetch expiring commitments — expiry-aware sizing only runs via the
 	// main pipeline in fetchAndFilterRegionRecs, which has access to the
 	// regional service client at the right moment. Drop tracking skipped (nil).
+	// nil commitments: no expiry deduction, so family sizing is identical to
+	// ApplyFamilyNUSizingRDS (documented on applyCoverageAndOverrides).
 	filteredRecs := applyCoverageAndOverrides(recs, cfg, coverageMap, nil, nil)
 
 	result.recommendations = filteredRecs
@@ -616,6 +618,12 @@ func applyRegionFilters(
 // ExistingCoveragePct further by the share of pool demand attributable to
 // RIs expiring within the window, so --target-coverage recommends
 // replacements before the cliff. Doesn't run if either input is empty.
+// RDS recs sized by the family-NU pass (target-coverage mode) ignore that
+// per-rec adjustment and instead get the same commitments and window through
+// ApplyFamilyNUSizingRDSWithExpiry, which deducts expiring normalized units
+// from the family's coverage; this deliberately raises RDS counts and costs
+// when RIs are about to expire (cli#2132). Callers passing nil commitments
+// get the plain ApplyFamilyNUSizingRDS behavior.
 //
 // drops accumulates per-reason drop counts for the end-of-run summary.
 // Pass nil to skip tracking.
@@ -640,7 +648,10 @@ func applyCoverageAndOverrides(recs []common.Recommendation, cfg Config, coverag
 	rest := recs
 	if cfg.TargetCoverage > 0 {
 		var familyDrops recommendations.FamilyDropCounts
-		sizedRDS, rest, familyDrops = recommendations.ApplyFamilyNUSizingRDS(recs, coverageMap, cfg.TargetCoverage)
+		var expiry recommendations.FamilyExpiryReport
+		sizedRDS, rest, familyDrops, expiry = recommendations.ApplyFamilyNUSizingRDSWithExpiry(
+			recs, coverageMap, cfg.TargetCoverage, expiringCommitments, cfg.RebuyWindowDays)
+		logFamilyExpiry(expiry, cfg.RebuyWindowDays)
 		drops.Add(common.DropFamilyAlreadyAtTarget, familyDrops.AlreadyAtTarget)
 		drops.Add(common.DropFamilyNoNUSignal, familyDrops.NoNUSignal)
 		drops.Add(common.DropFamilySizedToZero, familyDrops.SizedToZero)
@@ -660,6 +671,19 @@ func applyCoverageAndOverrides(recs []common.Recommendation, cfg Config, coverag
 	}
 
 	return filteredRecs
+}
+
+// logFamilyExpiry reports how rebuy-window expiry was folded into the RDS
+// family-NU sizing. Unusable RIs (unparsable instance class, or an engine
+// spelled differently from the coverage report) were NOT deducted, so they are
+// warned about rather than read as "no expiry".
+func logFamilyExpiry(expiry recommendations.FamilyExpiryReport, windowDays int) {
+	if expiry.ExpiringNU > 0 {
+		AppLogger.Printf("  ⏰ RDS family sizing: deducting %.0f normalized units of RIs expiring within %d days from family coverage\n", expiry.ExpiringNU, windowDays)
+	}
+	if expiry.Unusable > 0 {
+		AppLogger.Printf("  ⚠️  %d RDS reserved instances expiring within %d days could not be applied to family sizing (unparsable instance class or no matching coverage family); their expiry was NOT deducted\n", expiry.Unusable, windowDays)
+	}
 }
 
 // checkDuplicates adjusts recommendations against already-owned RIs so the run

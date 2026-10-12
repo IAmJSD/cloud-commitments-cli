@@ -76,6 +76,8 @@ func runCompletenessScenario(t *testing.T, service, regionMode, details string) 
 	switch service {
 	case "ec2":
 		assertReservationExpiryCSV(t, output, details, logs)
+	case rdsExpiryService:
+		assertRDSExpiryCSV(t, output, details, logs)
 	case "rds":
 		assertCompletenessDiagnostics(t, regionMode, details, stdout.String(), stderr.String())
 		assertCompletenessCSV(t, output, details, logs)
@@ -94,13 +96,20 @@ func runCompletenessCommandChild(t *testing.T) {
 	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
 	http.DefaultTransport = transport
 	t.Cleanup(transport.CloseIdleConnections)
-	args := []string{"--services", os.Getenv("CUDLY_COMPLETENESS_SERVICE"), "--term", "1", "--include-extended-support", "--coverage", "100",
+	services := os.Getenv("CUDLY_COMPLETENESS_SERVICE")
+	if services == rdsExpiryService {
+		services = "rds"
+	}
+	args := []string{"--services", services, "--term", "1", "--include-extended-support", "--coverage", "100",
 		"--output", os.Getenv("CUDLY_COMPLETENESS_OUTPUT"), "--audit-log", os.Getenv("CUDLY_COMPLETENESS_AUDIT")}
 	if os.Getenv("CUDLY_COMPLETENESS_REGIONS") == "explicit" {
 		args = append(args, "--regions", "us-east-1")
 	}
 	if os.Getenv("CUDLY_COMPLETENESS_SERVICE") == "ec2" {
 		args = append(args, reservationExpiryArgs(os.Getenv("CUDLY_COMPLETENESS_DETAILS"))...)
+	}
+	if os.Getenv("CUDLY_COMPLETENESS_SERVICE") == rdsExpiryService {
+		args = append(args, rdsExpiryArgs(os.Getenv("CUDLY_COMPLETENESS_DETAILS"))...)
 	}
 	rootCmd.SetArgs(args)
 	require.NoError(t, rootCmd.Execute())
