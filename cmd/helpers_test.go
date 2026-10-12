@@ -912,6 +912,7 @@ func TestApplyTargetCoverage_RI(t *testing.T) {
 			CommitmentCost:              1000,
 			OnDemandCost:                2000,
 			EstimatedSavings:            500,
+			ExistingCoverageKnown:       true,
 			AverageInstancesUsedPerHour: avg,
 			RecommendedUtilization:      recUtil,
 		}
@@ -1030,6 +1031,7 @@ func TestApplyTargetCoverage_RI_CostScaling(t *testing.T) {
 		OnDemandCost:                2000,
 		EstimatedSavings:            500,
 		SavingsPercentage:           25,
+		ExistingCoverageKnown:       true,
 		AverageInstancesUsedPerHour: 8,
 	}
 	// target=80, existing=0, avg=8 → gap=80.
@@ -1086,6 +1088,7 @@ func TestApplyTargetCoverage_RI_ExistingCoverage(t *testing.T) {
 			CommitmentCost:              1000,
 			OnDemandCost:                2000,
 			EstimatedSavings:            500,
+			ExistingCoverageKnown:       true,
 			AverageInstancesUsedPerHour: avg,
 			ExistingCoveragePct:         existingCov,
 		}
@@ -1233,6 +1236,7 @@ func TestApplySizing(t *testing.T) {
 		Service:                     common.ServiceEC2,
 		Count:                       10,
 		CommitmentType:              common.CommitmentReservedInstance,
+		ExistingCoverageKnown:       true,
 		AverageInstancesUsedPerHour: 8,
 	}
 
@@ -1271,6 +1275,7 @@ func TestApplyTargetCoverage_RI_Target100(t *testing.T) {
 			ResourceType:                "t3.medium",
 			Count:                       count,
 			CommitmentType:              common.CommitmentReservedInstance,
+			ExistingCoverageKnown:       true,
 			AverageInstancesUsedPerHour: avg,
 		}
 	}
@@ -1358,6 +1363,7 @@ func TestApplyTargetCoverage_DropTargetAlreadyMet(t *testing.T) {
 		ResourceType:                "t3.medium",
 		Count:                       5,
 		CommitmentType:              common.CommitmentReservedInstance,
+		ExistingCoverageKnown:       true,
 		AverageInstancesUsedPerHour: 8.0,
 		ExistingCoveragePct:         90.0,
 	}
@@ -1384,6 +1390,7 @@ func TestApplyTargetCoverage_DropTargetSizedToZero(t *testing.T) {
 		ResourceType:                "t3.micro",
 		Count:                       1,
 		CommitmentType:              common.CommitmentReservedInstance,
+		ExistingCoverageKnown:       true,
 		AverageInstancesUsedPerHour: 0.4,
 		ExistingCoveragePct:         0.0,
 	}

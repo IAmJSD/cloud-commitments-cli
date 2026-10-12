@@ -26,6 +26,7 @@ func TestApplyTargetCoverage_NonPositiveCountDropped_2121(t *testing.T) {
 			ResourceType:                "db.r6g.large",
 			CommitmentType:              common.CommitmentReservedInstance,
 			Count:                       count,
+			ExistingCoverageKnown:       true,
 			AverageInstancesUsedPerHour: 4,
 			ExistingCoveragePct:         0,
 			CommitmentCost:              1000,
