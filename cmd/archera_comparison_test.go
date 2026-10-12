@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -457,4 +459,67 @@ func TestArcheraDecodeErrorsAreBoundedAndClean(t *testing.T) {
 			assert.NotContains(t, out+errOut+err.Error(), archeraTestKey)
 		})
 	}
+}
+
+func TestArcheraErrorsMaskObfuscatedKey(t *testing.T) {
+	k := archeraTestKey
+	split := func(sep string) string { return k[:5] + sep + k[5:] }
+	pad := strings.Repeat("p", archeraMaxErrorSize-len("archera API returned HTTP 403: ")-len(k)/2)
+	cases := map[string]string{
+		"zero-width split":  "bad key " + split("\u200b"),
+		"control split":     "bad key " + split("\u0001"),
+		"bidi split":        "bad key " + split("\u202e"),
+		"echoed twice":      k + " and " + split("\u200b"),
+		"straddles the cap": pad + k,
+		"bidi isolate+RLO":  "x\u202e\u2066y\u200b" + k,
+	}
+	for name, msg := range cases {
+		t.Run("http "+name, func(t *testing.T) {
+			setupArchera(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Retry-After", "30")
+				w.WriteHeader(403)
+				body, _ := json.Marshal(map[string]string{"message": msg})
+				_, _ = w.Write(body)
+			})
+			out, errOut, err := runArchera(t, fullEnv())
+			require.Error(t, err)
+			assert.NotContains(t, out+errOut+err.Error(), k)
+			assertArcheraNoControlChars(t, err.Error())
+			assert.LessOrEqual(t, len(err.Error()), archeraMaxErrorSize)
+			assert.Contains(t, err.Error(), "retry after 30s")
+			assert.NotContains(t, err.Error(), "\u202e")
+		})
+	}
+	t.Run("key as enum value in a decode error", func(t *testing.T) {
+		body := strings.Replace(archeraComparisonFixture(), `"payment_option":"no_upfront"`, `"payment_option":"`+split("\u200b")+`"`, 1)
+		setupArchera(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
+		out, errOut, err := runArchera(t, fullEnv())
+		require.Error(t, err)
+		assert.NotContains(t, out+errOut+err.Error(), k)
+		assert.Contains(t, err.Error(), "[redacted]")
+	})
+	t.Run("plain key as enum value", func(t *testing.T) {
+		body := strings.Replace(archeraComparisonFixture(), `"payment_option":"no_upfront"`, `"payment_option":"`+k+`"`, 1)
+		setupArchera(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
+		_, _, err := runArchera(t, fullEnv())
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), k)
+	})
+}
+
+// A log or slog write of the key would bypass os.Stderr captured per test, so
+// route both default loggers into the capture for the whole run.
+func TestArcheraRunDoesNotLogKey(t *testing.T) {
+	var logs bytes.Buffer
+	savedLog, savedFlags := log.Writer(), log.Flags()
+	log.SetOutput(&logs)
+	savedSlog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { log.SetOutput(savedLog); log.SetFlags(savedFlags); slog.SetDefault(savedSlog) })
+	setupArchera(t, okHandler)
+	_, _, err := runArchera(t, fullEnv())
+	require.NoError(t, err)
+	setupArchera(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(403) })
+	_, _, _ = runArchera(t, fullEnv())
+	assert.NotContains(t, logs.String(), archeraTestKey)
 }

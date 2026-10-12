@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/insurance"
@@ -81,7 +83,7 @@ func runArcheraComparison(cmd *cobra.Command, _ []string) error {
 	}
 	comparison, err := client.Comparison(cmd.Context(), insurance.ComparisonRequest{PlanID: planID})
 	if err != nil {
-		return archeraSafeError(err)
+		return archeraSafeError(err, key)
 	}
 	dto := buildArcheraDTO(comparison)
 	if format == "json" {
@@ -108,15 +110,26 @@ func archeraSettings() (key, orgID, planID string, err error) {
 	return key, orgID, planID, nil
 }
 
+var archeraQuotedEscapeRE = regexp.MustCompile(`\\(?:u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2})`)
+
 // archeraSafeError renders a client error as bounded, terminal-safe text.
-// HTTP errors keep their sanitized message and Retry-After. Other errors
-// (decode failures echo the rejected vendor value) are stripped of control
-// and format characters and capped, because their text is vendor-controlled.
-func archeraSafeError(err error) error {
+// HTTP errors keep their message and Retry-After. Decode errors echo the
+// rejected vendor value. Both are vendor-controlled, so the text is cleaned
+// first (controls, format and separator characters removed, which would
+// otherwise let an obfuscated key such as one split by U+200B slip past an
+// exact-match mask), then the key is masked, then the result is capped.
+func archeraSafeError(err error, key string) error {
 	msg := err.Error()
 	var httpErr *insurance.HTTPError
 	if errors.As(err, &httpErr) && httpErr.RetryAfter > 0 {
 		msg = fmt.Sprintf("%s (retry after %s; not retried automatically)", msg, httpErr.RetryAfter)
+	}
+	// pkg decode errors quote the rejected value with %q, which spells control
+	// and format characters as literal \uXXXX text; drop those escapes too so
+	// they cannot split the key.
+	msg = archeraQuotedEscapeRE.ReplaceAllString(archeraSanitizeN(msg, math.MaxInt), "")
+	if key != "" {
+		msg = strings.ReplaceAll(msg, key, "[redacted]")
 	}
 	return errors.New(archeraSanitizeN(msg, archeraMaxErrorSize))
 }
