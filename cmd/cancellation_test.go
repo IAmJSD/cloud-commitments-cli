@@ -197,7 +197,7 @@ func TestProcessPurchaseLoop_AuditRecordWrittenBeforeDelay(t *testing.T) {
 	}
 	t.Cleanup(func() { waitBetweenPurchases = orig })
 
-	results := processPurchaseLoop(ctx, recs, "us-east-1", false, mockClient, cfg, "run-1")
+	results, _ := processPurchaseLoop(ctx, recs, "us-east-1", false, mockClient, cfg, "run-1")
 
 	require.Len(t, rowsAtWait, 1, "the purchase that just completed must already be audited when the delay starts")
 	require.Len(t, results, 1, "the second recommendation is not attempted after the interrupt")
@@ -297,7 +297,7 @@ func TestProcessPurchaseLoop_CancelDuringPurchaseDoesNotCancelTheInFlightCall(t 
 		}).
 		Return(common.PurchaseResult{Success: true, CommitmentID: "ri-1"}, nil)
 
-	results := processPurchaseLoop(ctx, recs, "us-east-1", false, mockClient, cfg, "run-1")
+	results, _ := processPurchaseLoop(ctx, recs, "us-east-1", false, mockClient, cfg, "run-1")
 
 	require.NoError(t, ctxErrAtPurchase)
 	require.Len(t, results, 1)

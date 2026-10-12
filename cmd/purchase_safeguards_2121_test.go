@@ -243,14 +243,14 @@ func TestExecutePurchasePipeline_InterruptsFailClosed_2121(t *testing.T) {
 		auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 		shutdownRequested.Store(true)
 		defer shutdownRequested.Store(false)
-		results := executePurchasePipeline(ctx, aws.Config{}, recs, true, "run-2121-int", Config{AuditLog: auditPath})
+		results, _ := executePurchasePipeline(ctx, aws.Config{}, recs, true, "run-2121-int", Config{AuditLog: auditPath})
 		assert.Empty(t, results, "a requested shutdown must stop the pipeline before the first purchase")
 		_, err := os.Stat(auditPath)
 		assert.True(t, os.IsNotExist(err), "no audit records without purchase attempts")
 	})
 	t.Run("uninterrupted dry run audits every rec as skipped", func(t *testing.T) {
 		auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
-		results := executePurchasePipeline(ctx, aws.Config{}, recs, true, "run-2121-dry", Config{AuditLog: auditPath})
+		results, _ := executePurchasePipeline(ctx, aws.Config{}, recs, true, "run-2121-dry", Config{AuditLog: auditPath})
 		require.Len(t, results, len(recs))
 		for _, result := range results {
 			assert.True(t, result.Success)
