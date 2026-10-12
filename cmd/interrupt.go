@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -44,6 +45,30 @@ func printInterruptedSummary(attempted, total int, results []common.PurchaseResu
 		}
 		AppLogger.Printf("   %s\n", unverifiedPurchaseLine(r))
 	}
+}
+
+// errAuditTrailLost marks a real run whose audit record could not be written
+// durably (or whose log failed the pre-purchase probe). The run stops and
+// exits non-zero: continuing would buy with no reconcilable trail (#2103).
+var errAuditTrailLost = errors.New("audit trail lost")
+
+// writeAuditRecordFn is a seam so tests can fail a write after a purchase.
+var writeAuditRecordFn = common.WriteAuditRecord
+
+// auditStopMessage tells the operator what ran before the audit trail was
+// lost. The last result may be missing from, or not durable in, the log.
+func auditStopMessage(attempted, total int, results []common.PurchaseResult, cause error) string {
+	last := "no purchase was attempted"
+	if n := len(results); n > 0 {
+		r := results[n-1]
+		last = fmt.Sprintf("last attempted: %s %s", r.Recommendation.Service, r.Recommendation.ResourceType)
+		if r.Success {
+			last += " (commitment " + r.CommitmentID + ")"
+		} else {
+			last += " (errored: " + fmt.Sprint(r.Error) + ")"
+		}
+	}
+	return fmt.Sprintf("\n❌ Audit record missing or not durable: stopping. %d of %d recommendation(s) attempted, the rest were not purchased; %s. Verify in AWS before re-running, a re-run may buy again. Cause: %v\n", attempted, total, last, cause)
 }
 
 func unverifiedPurchaseLine(r common.PurchaseResult) string {

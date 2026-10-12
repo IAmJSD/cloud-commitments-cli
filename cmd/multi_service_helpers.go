@@ -422,6 +422,7 @@ func requireRegionInventory(recs []common.Recommendation, cfg Config, data engin
 type regionRecommendations struct {
 	recommendations []common.Recommendation
 	results         []common.PurchaseResult
+	auditErr        error // errAuditTrailLost: stop buying
 }
 
 // processRegionRecommendations fetches and processes recommendations for a single region.
@@ -511,8 +512,9 @@ func processRegionRecommendations(
 	// it processes still ends up in cfg.AuditLog with a durable, groupable
 	// record; it is simply not grouped with a sibling region's run.
 	runID := uuid.New().String()
-	regionResults := processPurchaseLoop(ctx, adjustedRecs, region, isDryRun, serviceClient, cfg, runID)
+	regionResults, auditErr := processPurchaseLoop(ctx, adjustedRecs, region, isDryRun, serviceClient, cfg, runID)
 	result.results = regionResults
+	result.auditErr = auditErr
 
 	return result
 }

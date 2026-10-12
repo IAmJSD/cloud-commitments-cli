@@ -1282,7 +1282,7 @@ func TestProcessPurchaseLoopPurchaseFailure(t *testing.T) {
 
 	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
 
-	results := processPurchaseLoop(ctx, recs, "ap-south-1", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "ap-south-1", false, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 1)
 	assert.False(t, results[0].Success)
@@ -1301,7 +1301,7 @@ func TestProcessPurchaseLoopEmptyRecommendations(t *testing.T) {
 
 	mockClient := &MockServiceClient{}
 
-	results := processPurchaseLoop(ctx, []common.Recommendation{}, "us-east-1", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, []common.Recommendation{}, "us-east-1", false, mockClient, toolCfg, "test-run")
 
 	assert.Empty(t, results)
 	mockClient.AssertNotCalled(t, "PurchaseCommitment", mock.Anything, mock.Anything, mock.Anything)
@@ -1330,7 +1330,7 @@ func TestProcessServicePurchasesUserCancellation(t *testing.T) {
 
 	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
 
-	results := processPurchaseLoop(ctx, recs, "us-west-1", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "us-west-1", false, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 1)
 	assert.True(t, results[0].Success)
@@ -1356,7 +1356,7 @@ func TestProcessServicePurchasesDryRunMultiple(t *testing.T) {
 	mockClient := &MockServiceClient{}
 	// Dry run should not call PurchaseCommitment
 
-	results := processPurchaseLoop(ctx, recs, "ap-northeast-1", true, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "ap-northeast-1", true, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 3)
 	for i, result := range results {
@@ -1432,7 +1432,7 @@ func TestProcessPurchaseLoopDryRun(t *testing.T) {
 
 	// Logger output disabled for testing
 
-	results := processPurchaseLoop(ctx, recs, "us-east-1", true, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "us-east-1", true, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 2)
 	for _, result := range results {
@@ -1480,7 +1480,7 @@ func TestProcessPurchaseLoopActualPurchase(t *testing.T) {
 	// Disable purchase delay for testing
 	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
 
-	results := processPurchaseLoop(ctx, recs, "eu-west-1", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "eu-west-1", false, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 2)
 	for i, result := range results {
@@ -1525,7 +1525,7 @@ func TestProcessPurchaseLoopWithConfirmation(t *testing.T) {
 	// Disable purchase delay for testing
 	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
 
-	results := processPurchaseLoop(ctx, recs, "us-west-2", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "us-west-2", false, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 1)
 	assert.True(t, results[0].Success)

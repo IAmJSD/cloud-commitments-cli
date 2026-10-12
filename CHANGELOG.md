@@ -13,6 +13,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A `--purchase` run now stops, and exits 1, when an audit record cannot be
+  written durably (disk full, log removed or made unwritable mid-run) instead
+  of warning and buying more with no audit trail. The audit log is also probed
+  before each real purchase, so a log that broke after the start-of-run check
+  stops the run before buying. The report and summary for what already ran are
+  still written, and the message says how many recommendations were attempted
+  and to verify in AWS before re-running. Applies to the main pipeline and
+  `--input-csv`; dry runs still only warn (#2103).
+
 - Stop silently disabling the extended-support exclusion when AWS queries
   fail. A failed engine lifecycle query or region listing now aborts the run
   before any purchase; an RDS recommendation in a region whose instance
