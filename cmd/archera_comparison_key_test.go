@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +39,7 @@ var archeraInvisibleSeparators = map[string]string{
 
 // archeraKeyAlphabetSeparators are characters that occur in archeraLongKey
 // itself, so an allow-list skeleton keeps them between the key characters.
-var archeraKeyAlphabetSeparators = []string{"-", "x", "0", "--"}
+var archeraKeyAlphabetSeparators = []string{"-", "x", "0", "--", "---", "0x0", "-- -", "-x0-9"}
 
 // archeraFullwidth maps printable ASCII to its fullwidth form.
 func archeraFullwidth(s string) string {
@@ -164,13 +165,48 @@ func TestArcheraKeyFragmentBoundary(t *testing.T) {
 	}
 }
 
-// The gap rule is bounded: key characters 2 apart read as the key, 3 apart do
-// not, which is what keeps ordinary text out of the net.
+// The irregular-insertion rule is bounded: key characters 2 apart read as the
+// key, 3 apart do not. Uses an 8-character key so there is a single window.
 func TestArcheraKeyGapBound(t *testing.T) {
-	two := archeraSafeError(errors.New("A: "+archeraSplitEverywhere(archeraLongKey, "--")), archeraLongKey).Error()
+	const key = "abcdefgh"
+	two := archeraSafeError(errors.New("A: abc"+"aa"+"defgh"), key).Error()
 	assert.Contains(t, two, archeraWithheld)
-	three := archeraSafeError(errors.New("A: "+archeraSplitEverywhere(archeraLongKey, "---")), archeraLongKey).Error()
+	three := archeraSafeError(errors.New("A: abc"+"aaa"+"defgh"), key).Error()
 	assert.NotContains(t, three, archeraWithheld)
+}
+
+// The matcher is linear and looks only at what could be displayed: a hostile
+// 1 MB rejected value must not stall the command.
+func TestArcheraHostileLargeDecodeValueIsBounded(t *testing.T) {
+	const n = 1 << 20
+	value := strings.Repeat("p", n/2) + strings.Repeat("r", n/2)
+	body := strings.Replace(archeraComparisonFixture(), `"payment_option":"no_upfront"`, `"payment_option":`+mustJSON(t, value), 1)
+	setupArchera(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
+	env := map[string]string{archeraEnvAPIKey: archeraLongKey, archeraEnvOrgID: archeraTestOrg, archeraEnvPlanID: archeraTestPlan}
+	start := time.Now()
+	_, _, err := runArchera(t, env)
+	elapsed := time.Since(start)
+	require.Error(t, err)
+	assert.LessOrEqual(t, len(err.Error()), archeraMaxErrorSize)
+	assert.Less(t, elapsed, time.Second)
+}
+
+// Only text that could be displayed (plus a small slack for a key cut by the
+// cap) is checked: a key echoed far beyond the cap changes nothing.
+func TestArcheraKeyBeyondCheckWindowIsIgnored(t *testing.T) {
+	far := strings.Repeat("A", archeraMaxErrorSize+archeraCheckSlack+64) + archeraSplitEverywhere(archeraLongKey, "\u2800")
+	got := archeraSafeError(errors.New(far), archeraLongKey).Error()
+	assert.NotContains(t, got, archeraWithheld)
+	assert.Equal(t, strings.Repeat("A", archeraMaxErrorSize), got)
+}
+
+// A key spaced by the longest separator and cut by the cap is still withheld,
+// so the look-ahead slack covers a whole window of such a key.
+func TestArcheraKeySpacedByLongestSeparatorAtCapIsWithheld(t *testing.T) {
+	sep := strings.Repeat("-", archeraMaxSep)
+	msg := strings.Repeat("A", archeraMaxErrorSize-4) + archeraSplitEverywhere(archeraLongKey, sep)
+	got := archeraSafeError(errors.New(msg), archeraLongKey).Error()
+	assert.Equal(t, archeraWithheld, got)
 }
 
 // A key with an inner space or a format character is matched on what a reader

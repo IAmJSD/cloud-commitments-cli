@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/insurance"
 	"github.com/spf13/cobra"
@@ -155,20 +157,30 @@ func archeraSafeError(err error, key string) error {
 // them, so a split key can arrive as a prefix rather than whole.
 const archeraFragmentLen = 8
 
-// archeraMaxGap is how many other runes may sit between two consecutive key
-// characters before the text stops reading as the key. It covers a separator
-// taken from the key's own alphabet, such as "--" between every character.
+// archeraMaxGap is how many other runes may sit at one irregular spot between
+// two consecutive key characters before the text stops reading as the key.
 const archeraMaxGap = 2
+
+// archeraMaxSep is the longest separator, in key-alphabet runes, that may be
+// repeated between every pair of key characters (such as "-- -" or "0x0").
+const archeraMaxSep = 16
+
+// archeraCheckSlack is how far past the displayed cap the readability check
+// looks, so a key cut by the cap is still seen whole. It also bounds the work:
+// the check never reads more than archeraMaxErrorSize + archeraCheckSlack bytes.
+const archeraCheckSlack = archeraFragmentLen * (archeraMaxSep + 1) * utf8.UTFMax
 
 // archeraFold maps text to the form a reader would compare: NFKD (fullwidth
 // to ASCII, accents split off as droppable marks) then lower case.
 func archeraFold(s string) string { return strings.ToLower(norm.NFKD.String(s)) }
 
-// archeraKeyReadable reports whether msg shows min(len(key), archeraFragmentLen)
-// consecutive key characters, in order, with at most archeraMaxGap other
-// characters between neighbors. Both sides are folded, and msg is reduced to
+// archeraKeyReadable reports whether the displayable part of msg shows
+// min(len(key), archeraFragmentLen) consecutive key characters, either
+// separated by one repeated separator or in order with at most archeraMaxGap
+// other characters at each spot. Both sides are folded, and msg is reduced to
 // the runes that occur in the key, so any inserted character class drops out.
 // The key's own non-graphic and space runes are ignored, as the reader does.
+// Look-alike letters from other scripts are not handled.
 func archeraKeyReadable(msg, key string) bool {
 	var ks []rune
 	alphabet := map[rune]bool{}
@@ -178,45 +190,84 @@ func archeraKeyReadable(msg, key string) bool {
 			alphabet[r] = true
 		}
 	}
+	if len(ks) == 0 {
+		return true
+	}
 	var ms []rune
-	for _, r := range archeraFold(msg) {
+	for _, r := range archeraFold(archeraSanitizeN(msg, archeraMaxErrorSize+archeraCheckSlack)) {
 		if alphabet[r] {
 			ms = append(ms, r)
 		}
 	}
 	n := min(len(ks), archeraFragmentLen)
 	for i := 0; i+n <= len(ks); i++ {
-		if archeraHasGappedRun(ms, ks[i:i+n]) {
+		run := ks[i : i+n]
+		if archeraHasRepeatedSeparatorRun(ms, run) || archeraHasGappedRun(ms, run) {
 			return true
 		}
 	}
 	return false
 }
 
-// archeraHasGappedRun reports whether run occurs in ms as a subsequence with
-// at most archeraMaxGap skipped runes between neighbors. Gap 0 is a plain
-// substring match.
-func archeraHasGappedRun(ms, run []rune) bool {
-	var cur []int
+// archeraHasRepeatedSeparatorRun reports whether ms spells run with the same
+// separator (possibly empty, up to archeraMaxSep runes) between every pair of
+// neighbors. The separator is read off the first pair.
+func archeraHasRepeatedSeparatorRun(ms, run []rune) bool {
+	if len(run) < 2 {
+		return false
+	}
 	for i, r := range ms {
-		if r == run[0] {
-			cur = append(cur, i)
+		if r != run[0] {
+			continue
+		}
+		for j := i + 1; j < len(ms) && j-i-1 <= archeraMaxSep; j++ {
+			if ms[j] == run[1] && spellsWithSeparator(ms[i:], run, ms[i+1:j]) {
+				return true
+			}
 		}
 	}
+	return false
+}
+
+func spellsWithSeparator(ms, run, sep []rune) bool {
+	pos := 0
+	for k, r := range run {
+		if k > 0 {
+			if pos+len(sep) > len(ms) || !slices.Equal(ms[pos:pos+len(sep)], sep) {
+				return false
+			}
+			pos += len(sep)
+		}
+		if pos >= len(ms) || ms[pos] != r {
+			return false
+		}
+		pos++
+	}
+	return true
+}
+
+// archeraHasGappedRun reports whether run occurs in ms as a subsequence with
+// at most archeraMaxGap skipped runes between neighbors. Gap 0 is a plain
+// substring match. It is O(len(ms)*len(run)).
+func archeraHasGappedRun(ms, run []rune) bool {
+	reach := make([]bool, len(ms))
+	for i, r := range ms {
+		reach[i] = r == run[0]
+	}
 	for _, want := range run[1:] {
-		var next []int
+		next := make([]bool, len(ms))
 		for j, r := range ms {
 			if r != want {
 				continue
 			}
-			for _, p := range cur {
-				if j > p && j-p-1 <= archeraMaxGap {
-					next = append(next, j)
+			for g := 0; g <= archeraMaxGap && j-1-g >= 0; g++ {
+				if reach[j-1-g] {
+					next[j] = true
 					break
 				}
 			}
 		}
-		cur = next
+		reach = next
 	}
-	return len(cur) > 0
+	return slices.Contains(reach, true)
 }
