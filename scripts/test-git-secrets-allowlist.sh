@@ -189,7 +189,17 @@ run_case "UUID placeholder with a password on the same line" 1 p.go \
 # A secret appended to an otherwise-allowed account-ID fixture line stays caught.
 run_case "key appended to an allowed account-ID fixture line" 1 \
     cmd/helpers_test.go \
-    '			accountID: "123456789012", k := "'"$KEY"'"'
+    '			accountID: "'"$ACCT"'", k := "'"$KEY"'"'
+
+# CI-equivalent check: the pre-commit framework hands git-secrets explicit
+# file names (plain grep), unlike a no-argument scan (git grep), which
+# differ on regex features such as \s. Scan every tracked file of the real
+# repo that way, under the same registered patterns.
+git -C "$REPO_ROOT" ls-files -z | tar -C "$REPO_ROOT" --null -T - -cf - | tar -C "$tmp/repo" -xf -
+file_scan=0
+git ls-files -z --others --cached | xargs -0 git secrets --scan >"$tmp/file-scan.log" 2>&1 || file_scan=$?
+[ "$file_scan" -eq 0 ] || grep -E "^[^ ]+:[0-9]+:" "$tmp/file-scan.log" | cut -c1-200 >&2
+check_result "file-argument scan of all tracked files" 0 "$file_scan"
 
 echo "$pass PASS, $fail FAIL"
 [ "$fail" -eq 0 ]
