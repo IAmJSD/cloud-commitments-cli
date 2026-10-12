@@ -8,9 +8,11 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/insurance"
 	"github.com/spf13/cobra"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Archera settings come from the environment, read only inside RunE. The API
@@ -153,34 +155,68 @@ func archeraSafeError(err error, key string) error {
 // them, so a split key can arrive as a prefix rather than whole.
 const archeraFragmentLen = 8
 
-// archeraSkeleton keeps only the runes that occur in the key, so any character
-// a vendor inserts to hide the key (known or not, visible or not) drops out.
-// alphabet is the rune set of the trimmed key.
-func archeraSkeleton(s string, alphabet map[rune]bool) string {
-	var b strings.Builder
-	for _, r := range s {
-		if alphabet[r] {
-			b.WriteRune(r)
+// archeraMaxGap is how many other runes may sit between two consecutive key
+// characters before the text stops reading as the key. It covers a separator
+// taken from the key's own alphabet, such as "--" between every character.
+const archeraMaxGap = 2
+
+// archeraFold maps text to the form a reader would compare: NFKD (fullwidth
+// to ASCII, accents split off as droppable marks) then lower case.
+func archeraFold(s string) string { return strings.ToLower(norm.NFKD.String(s)) }
+
+// archeraKeyReadable reports whether msg shows min(len(key), archeraFragmentLen)
+// consecutive key characters, in order, with at most archeraMaxGap other
+// characters between neighbours. Both sides are folded, and msg is reduced to
+// the runes that occur in the key, so any inserted character class drops out.
+// The key's own non-graphic and space runes are ignored, as the reader does.
+func archeraKeyReadable(msg, key string) bool {
+	var ks []rune
+	alphabet := map[rune]bool{}
+	for _, r := range archeraFold(key) {
+		if unicode.IsGraphic(r) && !unicode.IsSpace(r) {
+			ks = append(ks, r)
+			alphabet[r] = true
 		}
 	}
-	return b.String()
-}
-
-// archeraKeyReadable reports whether msg shows a run of at least
-// min(len(key), archeraFragmentLen) consecutive key characters once every
-// non-key character is dropped.
-func archeraKeyReadable(msg, key string) bool {
-	alphabet := make(map[rune]bool, len(key))
-	for _, r := range key {
-		alphabet[r] = true
+	var ms []rune
+	for _, r := range archeraFold(msg) {
+		if alphabet[r] {
+			ms = append(ms, r)
+		}
 	}
-	ks := []rune(archeraSkeleton(key, alphabet))
-	ms := archeraSkeleton(msg, alphabet)
 	n := min(len(ks), archeraFragmentLen)
 	for i := 0; i+n <= len(ks); i++ {
-		if strings.Contains(ms, string(ks[i:i+n])) {
+		if archeraHasGappedRun(ms, ks[i:i+n]) {
 			return true
 		}
 	}
 	return false
+}
+
+// archeraHasGappedRun reports whether run occurs in ms as a subsequence with
+// at most archeraMaxGap skipped runes between neighbours. Gap 0 is a plain
+// substring match.
+func archeraHasGappedRun(ms, run []rune) bool {
+	var cur []int
+	for i, r := range ms {
+		if r == run[0] {
+			cur = append(cur, i)
+		}
+	}
+	for _, want := range run[1:] {
+		var next []int
+		for j, r := range ms {
+			if r != want {
+				continue
+			}
+			for _, p := range cur {
+				if j > p && j-p-1 <= archeraMaxGap {
+					next = append(next, j)
+					break
+				}
+			}
+		}
+		cur = next
+	}
+	return len(cur) > 0
 }
