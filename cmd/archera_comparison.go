@@ -8,6 +8,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/insurance"
 	"github.com/spf13/cobra"
@@ -112,24 +114,56 @@ func archeraSettings() (key, orgID, planID string, err error) {
 
 var archeraQuotedEscapeRE = regexp.MustCompile(`\\(?:u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2})`)
 
+// archeraWithheld replaces vendor text in which the key is still readable
+// after masking.
+const archeraWithheld = "[message withheld: contained the API key]"
+
 // archeraSafeError renders a client error as bounded, terminal-safe text.
-// HTTP errors keep their message and Retry-After. Decode errors echo the
-// rejected vendor value. Both are vendor-controlled, so the text is cleaned
-// first (controls, format and separator characters removed, which would
-// otherwise let an obfuscated key such as one split by U+200B slip past an
-// exact-match mask), then the key is masked, then the result is capped.
+// HTTP errors keep their status and Retry-After. Decode errors echo the
+// rejected vendor value. Both are vendor-controlled, so the order is: clean
+// the text (controls, format and separator characters removed, which would
+// otherwise let a key split by U+200B slip past an exact-match mask), mask the
+// trimmed key, check the full text for a key hidden behind characters the
+// clean leaves in place (combining marks, variation selectors, fillers,
+// invalid bytes) and withhold it if one is found, then cap.
 func archeraSafeError(err error, key string) error {
-	msg := err.Error()
+	key = strings.TrimSpace(key)
+	msg, suffix := err.Error(), ""
 	var httpErr *insurance.HTTPError
-	if errors.As(err, &httpErr) && httpErr.RetryAfter > 0 {
-		msg = fmt.Sprintf("%s (retry after %s; not retried automatically)", msg, httpErr.RetryAfter)
+	isHTTP := errors.As(err, &httpErr)
+	if isHTTP && httpErr.RetryAfter > 0 {
+		suffix = fmt.Sprintf(" (retry after %s; not retried automatically)", httpErr.RetryAfter)
 	}
 	// pkg decode errors quote the rejected value with %q, which spells control
 	// and format characters as literal \uXXXX text; drop those escapes too so
 	// they cannot split the key.
-	msg = archeraQuotedEscapeRE.ReplaceAllString(archeraSanitizeN(msg, math.MaxInt), "")
+	msg = archeraQuotedEscapeRE.ReplaceAllString(archeraSanitizeN(msg+suffix, math.MaxInt), "")
 	if key != "" {
 		msg = strings.ReplaceAll(msg, key, "[redacted]")
+		if strings.Contains(archeraSkeleton(msg), archeraSkeleton(key)) {
+			msg = archeraWithheld
+			if isHTTP {
+				msg = fmt.Sprintf("archera API returned HTTP %d: %s%s", httpErr.StatusCode, archeraWithheld, suffix)
+			}
+		}
 	}
 	return errors.New(archeraSanitizeN(msg, archeraMaxErrorSize))
+}
+
+// archeraSkeleton drops every rune that can hide or space out a key: control,
+// format, combining (which includes the variation selectors), enclosing and
+// separator runes, Hangul fillers and invalid bytes.
+func archeraSkeleton(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case utf8.RuneError, 0x115F, 0x1160, 0x3164, 0xFFA0:
+			continue
+		}
+		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Mn, unicode.Me, unicode.Zl, unicode.Zp, unicode.Zs) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
