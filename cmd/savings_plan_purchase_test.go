@@ -189,7 +189,7 @@ func TestProcessCSVRegionPurchases_SavingsPlanRowWithEmptyRegionAndProvider(t *t
 		Details: &common.SavingsPlanDetails{PlanType: "Compute", HourlyCommitment: 1.5},
 	}
 
-	_, results, ok := processCSVRegionPurchases(context.Background(), awsCfg, rec.Service, "", []common.Recommendation{rec}, false, cfg, "run-1")
+	_, results, ok, _ := processCSVRegionPurchases(context.Background(), awsCfg, rec.Service, "", []common.Recommendation{rec}, false, cfg, "run-1")
 
 	require.True(t, ok)
 	require.Len(t, results, 1)
@@ -308,13 +308,13 @@ func TestProcessPurchaseLoop_DryRunReportsPreconditionFailureOnCSVShapedRows(t *
 	csvEC2.Details = &common.ComputeDetails{InstanceType: "m5.large", Platform: "Linux/UNIX"} // loader leaves Tenancy/Scope blank
 	okSP := parserShapedSP()
 
-	results := processPurchaseLoop(context.Background(), []common.Recommendation{noDetailsSP, okSP}, "", true, nil, cfg, "run-1")
+	results, _ := processPurchaseLoop(context.Background(), []common.Recommendation{noDetailsSP, okSP}, "", true, nil, cfg, "run-1")
 	require.Len(t, results, 2)
 	assert.False(t, results[0].Success)
 	assert.True(t, results[1].Success)
 	assert.Contains(t, results[1].CommitmentID, "global")
 
-	results = processPurchaseLoop(context.Background(), []common.Recommendation{csvEC2}, "us-east-1", true, nil, cfg, "run-2")
+	results, _ = processPurchaseLoop(context.Background(), []common.Recommendation{csvEC2}, "us-east-1", true, nil, cfg, "run-2")
 	require.Len(t, results, 1)
 	assert.False(t, results[0].Success)
 }
@@ -393,7 +393,7 @@ func TestProcessCSVRegionPurchases_SavingsPlanRowFromWrittenCSV(t *testing.T) {
 	require.Empty(t, recs[0].Region)
 	require.Empty(t, recs[0].Provider)
 
-	_, results, ok := processCSVRegionPurchases(context.Background(), awsCfg, recs[0].Service, recs[0].Region, recs, false, cfg, "run-1")
+	_, results, ok, _ := processCSVRegionPurchases(context.Background(), awsCfg, recs[0].Service, recs[0].Region, recs, false, cfg, "run-1")
 
 	require.True(t, ok)
 	require.Len(t, results, 1)

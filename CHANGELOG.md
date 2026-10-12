@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A `--purchase` run now stops, and exits 1, when an audit record cannot be
+  written durably (disk full, log removed or made unwritable mid-run) instead
+  of warning and buying more with no audit trail. The audit log is also probed
+  before each real purchase, so a log that broke after the start-of-run check
+  stops the run before buying. The report and summary for what already ran are
+  still written, and the message says how many recommendations were attempted
+  and to verify in AWS before re-running. Applies to the main pipeline and
+  `--input-csv`; dry runs still only warn (#2103).
+
 - Ctrl-C now cancels the whole invocation instead of only setting a flag that
   was polled between purchases. The engine-version lifecycle queries, region
   discovery, recommendation fetch, coverage fetch and duplicate checks treat a

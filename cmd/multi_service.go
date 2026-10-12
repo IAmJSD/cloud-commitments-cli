@@ -202,7 +202,16 @@ func runToolMultiService(ctx context.Context, cfg Config) {
 	}
 
 	// Phases 3-4: confirm, purchase, and produce summary outputs.
-	runPurchaseAndReport(ctx, awsCfg, scoredResult, isDryRun, cfg, drops)
+	fatalOnError(runPurchaseAndReport(ctx, awsCfg, scoredResult, isDryRun, cfg, drops))
+}
+
+// fatalOnError exits 1 on a non-nil error. The report and summary were already
+// written, so this is the last step of the run (untested glue, like
+// runCSVPathOrFatal).
+func fatalOnError(err error) {
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
 }
 
 // mustFetchEngineVersionData is fetchEngineVersionData for the main pipeline:
@@ -227,27 +236,31 @@ func exitIfInterrupted(ctx context.Context, phase string) {
 // runPurchaseAndReport handles the confirm, execute, and report phases of
 // the multi-service pipeline. It is a separate function to keep
 // runToolMultiService within the cyclomatic-complexity limit.
-func runPurchaseAndReport(ctx context.Context, awsCfg aws.Config, scoredResult scorer.ScoredResult, isDryRun bool, cfg Config, drops *common.DropSummary) {
+func runPurchaseAndReport(ctx context.Context, awsCfg aws.Config, scoredResult scorer.ScoredResult, isDryRun bool, cfg Config, drops *common.DropSummary) error {
 	runID := uuid.New().String()
 	if !confirmPurchaseRun(scoredResult.Passed, isDryRun) {
 		printDropSummary(drops)
 		AppLogger.Printf("\n❌ Purchase canceled.\n")
-		return
+		return nil
 	}
 
-	executeAndReport(ctx, awsCfg, scoredResult.Passed, isDryRun, runID, cfg, drops)
+	return executeAndReport(ctx, awsCfg, scoredResult.Passed, isDryRun, runID, cfg, drops)
 }
 
 // executeAndReport runs the purchase pipeline and produces the report and
 // summary for whatever ran, interrupted or not. Split from
 // runPurchaseAndReport so the post-confirmation half is testable without a
 // terminal.
-func executeAndReport(ctx context.Context, awsCfg aws.Config, passed []common.Recommendation, isDryRun bool, runID string, cfg Config, drops *common.DropSummary) {
-	allResults := executePurchasePipeline(ctx, awsCfg, passed, isDryRun, runID, cfg)
+func executeAndReport(ctx context.Context, awsCfg aws.Config, passed []common.Recommendation, isDryRun bool, runID string, cfg Config, drops *common.DropSummary) error {
+	allResults, auditErr := executePurchasePipeline(ctx, awsCfg, passed, isDryRun, runID, cfg)
 	writeReportAndSummary(passed, allResults, isDryRun, cfg, drops)
 	if stopRequested(ctx) {
 		printInterruptedSummary(len(allResults), len(passed), allResults, isDryRun)
 	}
+	if auditErr != nil {
+		AppLogger.Print(auditStopMessage(len(allResults), len(passed), allResults, auditErr))
+	}
+	return auditErr
 }
 
 // confirmPurchaseRun asks for confirmation once against the full
@@ -485,7 +498,8 @@ func sumPassedRecs(recs []common.Recommendation) (total int, totalSavings float6
 }
 
 // executePurchasePipeline purchases each rec in the passed list (or dry-runs) and writes audit records.
-func executePurchasePipeline(ctx context.Context, awsCfg aws.Config, recs []common.Recommendation, isDryRun bool, runID string, cfg Config) []common.PurchaseResult {
+// It stops at the first audit failure on a real run and returns errAuditTrailLost.
+func executePurchasePipeline(ctx context.Context, awsCfg aws.Config, recs []common.Recommendation, isDryRun bool, runID string, cfg Config) ([]common.PurchaseResult, error) {
 	results := make([]common.PurchaseResult, 0, len(recs))
 	for i := range recs {
 		rec := recs[i]
@@ -493,18 +507,23 @@ func executePurchasePipeline(ctx context.Context, awsCfg aws.Config, recs []comm
 			log.Printf("Shutdown requested — skipping %d remaining recommendations", len(recs)-i)
 			break
 		}
+		if err := probeAuditLog(isDryRun, cfg.AuditLog); err != nil {
+			return results, err
+		}
 		// The purchase runs on a context that survives Ctrl-C: canceling the
 		// request mid-flight can leave AWS having created the commitment
 		// while the CLI records a failure, and a re-run then buys it again.
 		// The per-call SDK timeouts still bound it.
 		result, status := purchaseSingleRec(context.WithoutCancel(ctx), awsCfg, rec, i+1, isDryRun, cfg)
 		results = append(results, result)
-		writePurchaseAuditRecord(runID, rec, result, status, isDryRun, cfg.AuditLog)
+		if err := writePurchaseAuditRecord(runID, rec, result, status, isDryRun, cfg.AuditLog); err != nil {
+			return results, err
+		}
 		if !isDryRun && i < len(recs)-1 {
 			waitBetweenPurchases(ctx)
 		}
 	}
-	return results
+	return results, nil
 }
 
 // writePurchaseAuditRecord writes a single purchase's audit record. Shared by
@@ -516,11 +535,33 @@ func executePurchasePipeline(ctx context.Context, awsCfg aws.Config, recs []comm
 // no audit trail: on a partial failure there was no durable, per-recommendation
 // record of which rows succeeded, so an operator could only re-run the whole
 // file, which is a double purchase for the rows that already succeeded.
-func writePurchaseAuditRecord(runID string, rec common.Recommendation, result common.PurchaseResult, status string, isDryRun bool, auditLogPath string) {
+//
+// A failed write on a real run returns errAuditTrailLost (#2103): the caller
+// must stop buying. The record may be missing or written but not durable
+// (sync failed); both count as lost. A dry run only warns.
+func writePurchaseAuditRecord(runID string, rec common.Recommendation, result common.PurchaseResult, status string, isDryRun bool, auditLogPath string) error {
 	auditRec := common.NewAuditRecord(runID, rec, result, status, isDryRun, common.PurchaseSourceCLI)
-	if err := common.WriteAuditRecord(auditRec, auditLogPath); err != nil {
-		log.Printf("Warning: failed to write audit record: %v", err)
+	if err := writeAuditRecordFn(auditRec, auditLogPath); err != nil {
+		if isDryRun {
+			log.Printf("Warning: failed to write audit record: %v", err)
+			return nil
+		}
+		return fmt.Errorf("%w: write: %w", errAuditTrailLost, err)
 	}
+	return nil
+}
+
+// probeAuditLog checks, before a real purchase, that the audit log can still
+// be appended to, so a log that broke after the start-of-run check stops the
+// run before money moves. Dry runs skip it.
+func probeAuditLog(isDryRun bool, auditLogPath string) error {
+	if isDryRun {
+		return nil
+	}
+	if err := common.CheckAuditLogWritable(auditLogPath); err != nil {
+		return fmt.Errorf("%w: probe before purchase: %w", errAuditTrailLost, err)
+	}
+	return nil
 }
 
 // purchaseAuditStatus derives the audit status for a completed (non-dry-run)
@@ -680,6 +721,13 @@ func runToolFromCSV(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
+	return runCSVPurchases(ctx, awsCfg, recs, isDryRun, cfg, runID)
+}
+
+// runCSVPurchases groups the confirmed CSV rows by service and region, buys
+// them, and writes the report and summary for whatever ran. A non-nil error
+// is errAuditTrailLost.
+func runCSVPurchases(ctx context.Context, awsCfg aws.Config, recs []common.Recommendation, isDryRun bool, cfg Config, runID string) error {
 	// Create account alias cache for lookup
 	accountCache := NewAccountAliasCache(awsCfg)
 
@@ -691,11 +739,12 @@ func runToolFromCSV(ctx context.Context, cfg Config) error {
 
 	// Process purchases
 	allResults := make([]common.PurchaseResult, 0)
-	serviceResults := make([]common.PurchaseResult, 0)
+	var serviceResults []common.PurchaseResult
 	serviceStats := make(map[common.ServiceType]ServiceProcessingStats)
 	// allAdjustedRecs accumulates post-dedup recommendations so the final summary
 	// reflects what was actually processed rather than the pre-dedup input slice.
 	allAdjustedRecs := make([]common.Recommendation, 0)
+	var auditErr error // errAuditTrailLost: set by a region, stops the service loop too
 
 	for service, regionRecs := range recsByServiceRegion {
 		if stopRequested(ctx) {
@@ -703,31 +752,13 @@ func runToolFromCSV(ctx context.Context, cfg Config) error {
 			break
 		}
 
-		// Reset service results for each service
-		serviceResults = serviceResults[:0]
-
 		AppLogger.Printf("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 		AppLogger.Printf("🎯 Processing %s\n", getServiceDisplayName(service))
 		AppLogger.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
-		serviceRecs := make([]common.Recommendation, 0)
-		for region, recs := range regionRecs {
-			if stopRequested(ctx) {
-				log.Printf("Shutdown requested; skipping remaining regions for %s", getServiceDisplayName(service))
-				break
-			}
-
-			AppLogger.Printf("\n  📍 Region: %s (%d recommendations)\n", region, len(recs))
-
-			processedRecs, regionResults, ok := processCSVRegionPurchases(ctx, awsCfg, service, region, recs, isDryRun, cfg, runID)
-			if !ok {
-				continue
-			}
-
-			serviceRecs = append(serviceRecs, processedRecs...)
-			allAdjustedRecs = append(allAdjustedRecs, processedRecs...)
-			serviceResults = append(serviceResults, regionResults...)
-		}
+		var serviceRecs []common.Recommendation
+		serviceRecs, serviceResults, auditErr = processCSVService(ctx, awsCfg, service, regionRecs, isDryRun, cfg, runID)
+		allAdjustedRecs = append(allAdjustedRecs, serviceRecs...)
 
 		// Add service results to overall results
 		allResults = append(allResults, serviceResults...)
@@ -736,6 +767,9 @@ func runToolFromCSV(ctx context.Context, cfg Config) error {
 		stats := calculateServiceStats(service, serviceRecs, serviceResults)
 		serviceStats[service] = stats
 		printServiceSummary(service, stats)
+		if auditErr != nil {
+			break
+		}
 	}
 
 	// Generate CSV filename and write report
@@ -754,7 +788,10 @@ func runToolFromCSV(ctx context.Context, cfg Config) error {
 	if stopRequested(ctx) {
 		printInterruptedSummary(len(allResults), len(recs), allResults, isDryRun)
 	}
-	return nil
+	if auditErr != nil {
+		AppLogger.Print(auditStopMessage(len(allResults), len(recs), allResults, auditErr))
+	}
+	return auditErr
 }
 
 // processCSVRegionPurchases handles a single (service, region) pair within
@@ -765,11 +802,11 @@ func runToolFromCSV(ctx context.Context, cfg Config) error {
 // check refused it) and the caller should move on to the next region.
 // Extracted out of runToolFromCSV to keep it under the project's gocyclo
 // budget.
-func processCSVRegionPurchases(ctx context.Context, awsCfg aws.Config, service common.ServiceType, region string, recs []common.Recommendation, isDryRun bool, cfg Config, runID string) (processedRecs []common.Recommendation, results []common.PurchaseResult, ok bool) {
+func processCSVRegionPurchases(ctx context.Context, awsCfg aws.Config, service common.ServiceType, region string, recs []common.Recommendation, isDryRun bool, cfg Config, runID string) (processedRecs []common.Recommendation, results []common.PurchaseResult, ok bool, auditErr error) {
 	clientRegion, err := clientRegionFor(service, region)
 	if err != nil {
 		AppLogger.Printf("  ❌ Cannot purchase %d %s recommendation(s) from the CSV: %v\n", len(recs), getServiceDisplayName(service), err)
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	regionalCfg := awsCfg.Copy()
 	regionalCfg.Region = clientRegion
@@ -778,13 +815,13 @@ func processCSVRegionPurchases(ctx context.Context, awsCfg aws.Config, service c
 	if serviceClient == nil {
 		AppLogger.Printf("  ⚠️  Service client not yet implemented for %s\n", getServiceDisplayName(service))
 		AppLogger.Printf("     (Skipping purchase phase for this service)\n")
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 
 	// Check for duplicate RIs to avoid double purchasing.
 	adjustedRecs, dedupOK := checkDuplicatesForCSVRegion(ctx, recs, serviceClient, service, region, isDryRun)
 	if !dedupOK {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	// Deducting existing commitments shrinks Count, which can push a row
 	// that cleared the floor in filterAndAdjustRecommendations back under it
@@ -794,8 +831,8 @@ func processCSVRegionPurchases(ctx context.Context, awsCfg aws.Config, service c
 	// to the pre-deduction counts.
 	processedRecs = applyMinCountFloor(adjustedRecs, cfg.MinCount)
 
-	results = processPurchaseLoop(ctx, processedRecs, region, isDryRun, serviceClient, cfg, runID)
-	return processedRecs, results, true
+	results, auditErr = processPurchaseLoop(ctx, processedRecs, region, isDryRun, serviceClient, cfg, runID)
+	return processedRecs, results, true, auditErr
 }
 
 // checkDuplicatesForCSVRegion runs the duplicate check for a single
@@ -914,6 +951,10 @@ func processService(ctx context.Context, awsCfg aws.Config, recClient provider.R
 		)
 		serviceRecs = append(serviceRecs, regionResult.recommendations...)
 		serviceResults = append(serviceResults, regionResult.results...)
+		if regionResult.auditErr != nil {
+			log.Printf("%s", auditStopMessage(len(serviceResults), len(serviceRecs), serviceResults, regionResult.auditErr))
+			break
+		}
 	}
 
 	return serviceRecs, serviceResults
@@ -925,7 +966,7 @@ func processService(ctx context.Context, awsCfg aws.Config, recClient provider.R
 // pipeline) generates one runID per invocation. Confirmation is not asked
 // here: prepareCSVPurchaseRun confirms once for the whole run before this
 // loop is reached.
-func processPurchaseLoop(ctx context.Context, recs []common.Recommendation, region string, isDryRun bool, serviceClient provider.ServiceClient, cfg Config, runID string) []common.PurchaseResult {
+func processPurchaseLoop(ctx context.Context, recs []common.Recommendation, region string, isDryRun bool, serviceClient provider.ServiceClient, cfg Config, runID string) ([]common.PurchaseResult, error) {
 	results := make([]common.PurchaseResult, 0, len(recs))
 
 	for j := range recs {
@@ -934,42 +975,24 @@ func processPurchaseLoop(ctx context.Context, recs []common.Recommendation, regi
 			break
 		}
 
+		if err := probeAuditLog(isDryRun, cfg.AuditLog); err != nil {
+			return results, err
+		}
+
 		rec := recs[j]
 		label := purchaseRegionLabel(rec, region)
 		AppLogger.Printf("    [%d/%d] Processing: %s %s\n", j+1, len(recs), rec.Service, rec.ResourceType)
 		AppLogger.Printf("    💳 Purchasing %d instances\n", rec.Count)
 
-		var result common.PurchaseResult
-		var status string
-		attempted := false
-		if err := validatePurchasePreconditions(rec, region); err != nil {
-			result = preconditionFailure(rec, err, isDryRun)
-			status = "error"
-		} else if isDryRun {
-			result = createDryRunResult(rec, label, j+1, cfg)
-			status = "skipped"
-		} else {
-			// Execute actual purchase.
-			attempted = true
-			// Detached from Ctrl-C for the same reason as in
-			// executePurchasePipeline.
-			result = executePurchase(context.WithoutCancel(ctx), rec, label, j+1, serviceClient, cfg)
-			status = purchaseAuditStatus(result)
-		}
+		result, status, attempted := runOnePurchase(ctx, rec, label, region, j+1, isDryRun, serviceClient, cfg)
 
 		// Audit first, then the rate-limit delay: a Ctrl-C during the delay
 		// must not lose the record of a purchase that already completed.
-		writePurchaseAuditRecord(runID, rec, result, status, isDryRun, cfg.AuditLog)
 		results = append(results, result)
-
-		if result.Success {
-			AppLogger.Printf("    ✅ Success: %s\n", result.CommitmentID)
-		} else {
-			errMsg := "unknown error"
-			if result.Error != nil {
-				errMsg = result.Error.Error()
-			}
-			AppLogger.Printf("    ❌ Failed: %s\n", errMsg)
+		auditErr := writePurchaseAuditRecord(runID, rec, result, status, isDryRun, cfg.AuditLog)
+		logPurchaseOutcome(result)
+		if auditErr != nil {
+			return results, auditErr
 		}
 
 		// Rate-limit delay between real purchases; returns at once on Ctrl-C.
@@ -978,5 +1001,56 @@ func processPurchaseLoop(ctx context.Context, recs []common.Recommendation, regi
 		}
 	}
 
-	return results
+	return results, nil
+}
+
+// runOnePurchase validates and then dry-runs or executes one CSV-path
+// recommendation. attempted reports whether a real purchase call was made.
+func runOnePurchase(ctx context.Context, rec common.Recommendation, label, region string, index int, isDryRun bool, serviceClient provider.ServiceClient, cfg Config) (result common.PurchaseResult, status string, attempted bool) {
+	if err := validatePurchasePreconditions(rec, region); err != nil {
+		return preconditionFailure(rec, err, isDryRun), "error", false
+	}
+	if isDryRun {
+		return createDryRunResult(rec, label, index, cfg), "skipped", false
+	}
+	// Detached from Ctrl-C for the same reason as in executePurchasePipeline.
+	result = executePurchase(context.WithoutCancel(ctx), rec, label, index, serviceClient, cfg)
+	return result, purchaseAuditStatus(result), true
+}
+
+func logPurchaseOutcome(result common.PurchaseResult) {
+	if result.Success {
+		AppLogger.Printf("    ✅ Success: %s\n", result.CommitmentID)
+		return
+	}
+	errMsg := "unknown error"
+	if result.Error != nil {
+		errMsg = result.Error.Error()
+	}
+	AppLogger.Printf("    ❌ Failed: %s\n", errMsg)
+}
+
+// processCSVService runs every region of one service. A non-nil error is
+// errAuditTrailLost: the partial results are still returned, and the caller
+// stops the service loop as well.
+func processCSVService(ctx context.Context, awsCfg aws.Config, service common.ServiceType, regionRecs map[string][]common.Recommendation, isDryRun bool, cfg Config, runID string) (serviceRecs []common.Recommendation, serviceResults []common.PurchaseResult, auditErr error) {
+	for region, recs := range regionRecs {
+		if stopRequested(ctx) {
+			log.Printf("Shutdown requested; skipping remaining regions for %s", getServiceDisplayName(service))
+			break
+		}
+
+		AppLogger.Printf("\n  📍 Region: %s (%d recommendations)\n", region, len(recs))
+
+		processedRecs, regionResults, ok, regionErr := processCSVRegionPurchases(ctx, awsCfg, service, region, recs, isDryRun, cfg, runID)
+		if !ok {
+			continue
+		}
+		serviceRecs = append(serviceRecs, processedRecs...)
+		serviceResults = append(serviceResults, regionResults...)
+		if regionErr != nil {
+			return serviceRecs, serviceResults, regionErr
+		}
+	}
+	return serviceRecs, serviceResults, nil
 }
