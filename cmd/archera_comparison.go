@@ -8,8 +8,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/insurance"
 	"github.com/spf13/cobra"
@@ -140,7 +138,7 @@ func archeraSafeError(err error, key string) error {
 	msg = archeraQuotedEscapeRE.ReplaceAllString(archeraSanitizeN(msg+suffix, math.MaxInt), "")
 	if key != "" {
 		msg = strings.ReplaceAll(msg, key, "[redacted]")
-		if strings.Contains(archeraSkeleton(msg), archeraSkeleton(key)) {
+		if archeraKeyReadable(msg, key) {
 			msg = archeraWithheld
 			if isHTTP {
 				msg = fmt.Sprintf("archera API returned HTTP %d: %s%s", httpErr.StatusCode, archeraWithheld, suffix)
@@ -150,20 +148,39 @@ func archeraSafeError(err error, key string) error {
 	return errors.New(archeraSanitizeN(msg, archeraMaxErrorSize))
 }
 
-// archeraSkeleton drops every rune that can hide or space out a key: control,
-// format, combining (which includes the variation selectors), enclosing and
-// separator runes, Hangul fillers and invalid bytes.
-func archeraSkeleton(s string) string {
+// archeraFragmentLen is the longest key fragment that may remain readable in
+// vendor text. The pkg cuts HTTP messages at 200 bytes before the CLI sees
+// them, so a split key can arrive as a prefix rather than whole.
+const archeraFragmentLen = 8
+
+// archeraSkeleton keeps only the runes that occur in the key, so any character
+// a vendor inserts to hide the key (known or not, visible or not) drops out.
+// alphabet is the rune set of the trimmed key.
+func archeraSkeleton(s string, alphabet map[rune]bool) string {
 	var b strings.Builder
 	for _, r := range s {
-		switch r {
-		case utf8.RuneError, 0x115F, 0x1160, 0x3164, 0xFFA0:
-			continue
+		if alphabet[r] {
+			b.WriteRune(r)
 		}
-		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Mn, unicode.Me, unicode.Zl, unicode.Zp, unicode.Zs) {
-			continue
-		}
-		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// archeraKeyReadable reports whether msg shows a run of at least
+// min(len(key), archeraFragmentLen) consecutive key characters once every
+// non-key character is dropped.
+func archeraKeyReadable(msg, key string) bool {
+	alphabet := make(map[rune]bool, len(key))
+	for _, r := range key {
+		alphabet[r] = true
+	}
+	ks := []rune(archeraSkeleton(key, alphabet))
+	ms := archeraSkeleton(msg, alphabet)
+	n := min(len(ks), archeraFragmentLen)
+	for i := 0; i+n <= len(ks); i++ {
+		if strings.Contains(ms, string(ks[i:i+n])) {
+			return true
+		}
+	}
+	return false
 }
