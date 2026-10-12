@@ -497,7 +497,8 @@ func TestArcheraErrorsMaskObfuscatedKey(t *testing.T) {
 		out, errOut, err := runArchera(t, fullEnv())
 		require.Error(t, err)
 		assert.NotContains(t, out+errOut+err.Error(), k)
-		assert.Contains(t, err.Error(), "[redacted]")
+		// pkg/insurance no longer echoes the rejected value at all.
+		assert.Contains(t, err.Error(), "not shown")
 	})
 	t.Run("plain key as enum value", func(t *testing.T) {
 		body := strings.Replace(archeraComparisonFixture(), `"payment_option":"no_upfront"`, `"payment_option":"`+k+`"`, 1)
@@ -567,7 +568,11 @@ func TestArcheraErrorsWithholdKeyHiddenBehindSurvivingCharacters(t *testing.T) {
 				out, errOut, err := runArchera(t, fullEnv())
 				require.Error(t, err)
 				assert.NotContains(t, out+errOut, k)
-				checkMsg(t, err.Error())
+				// pkg/insurance no longer echoes the rejected value, so there is
+				// nothing to withhold; the key must still not appear.
+				assert.NotContains(t, err.Error(), k)
+				assertArcheraNoControlChars(t, err.Error())
+				assert.LessOrEqual(t, len(err.Error()), archeraMaxErrorSize)
 			})
 			for kind, wrapped := range map[string]error{
 				"transport": errors.New(msg),

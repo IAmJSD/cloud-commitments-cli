@@ -145,6 +145,11 @@ func TestArcheraLongKeyVisibleDisguisesAreWithheld(t *testing.T) {
 	}
 	for name, echo := range echoes {
 		forArcheraErrorPaths(t, echo, []int{0}, func(path, got string) {
+			if path == "decode" {
+				// pkg/insurance no longer echoes vendor values in decode errors.
+				assert.Empty(t, archeraReadableKeyFragment(got), "%s %s: %q", path, name, got)
+				return
+			}
 			assert.Contains(t, got, archeraWithheld, "%s %s: %q", path, name, got)
 		})
 	}

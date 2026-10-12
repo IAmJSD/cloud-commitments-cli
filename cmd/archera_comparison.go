@@ -81,7 +81,7 @@ func runArcheraComparison(cmd *cobra.Command, _ []string) error {
 
 	// Config and client stay local to this call; never store them in a
 	// package variable or struct.
-	client, err := insurance.NewClient(insurance.Config{APIKey: key, OrgID: orgID}, archeraHTTPClient)
+	client, err := insurance.NewClient(insurance.Config{APIKey: insurance.NewSecret(key), OrgID: orgID}, archeraHTTPClient)
 	if err != nil {
 		return err
 	}
