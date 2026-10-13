@@ -317,8 +317,8 @@ func determineRegionsForService(ctx context.Context, recClient provider.Recommen
 	// account-wide set for every region, so honoring --regions here repeats
 	// each Savings Plan once per listed region and, now that Savings Plan
 	// purchases work, would buy it that many times. EC2Instance plans are
-	// still narrowed to the requested regions by the region filters on
-	// Details.Region.
+	// still narrowed to the requested regions by shouldIncludeRecommendationRegion
+	// on Details.Region.
 	if common.IsSavingsPlan(service) {
 		AppLogger.Printf("🌍 Fetching account-level Savings Plans recommendations...\n")
 		return []string{spAPIRegion}, nil // Single query for account-level data
