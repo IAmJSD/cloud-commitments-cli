@@ -161,10 +161,11 @@ func TestDiscoverRegionsForService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockClient := &MockRecommendationsClient{}
-			mockClient.On("GetRecommendationsForService", ctx, tt.service).Return(tt.mockReturns, nil)
+			mockClient.On("GetRecommendations", ctx, mock.MatchedBy(func(p *common.RecommendationParams) bool {
+				return p.Service == tt.service && p.Region == ""
+			})).Return(tt.mockReturns, nil)
 
-			// Now we can use the actual function directly since it accepts an interface
-			regions, err := discoverRegionsForService(ctx, mockClient, tt.service)
+			regions, err := discoverRegionsForService(ctx, mockClient, tt.service, Config{TermYears: 1})
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedRegions, regions)

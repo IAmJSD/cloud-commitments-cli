@@ -915,7 +915,7 @@ func filterAndAdjustRecommendations(ctx context.Context, recs []common.Recommend
 // processService processes a single service and returns recommendations and results.
 // Used by legacy callers; new code should use fetchAllRecs + executePurchasePipeline.
 func processService(ctx context.Context, awsCfg aws.Config, recClient provider.RecommendationsClient, accountCache *AccountAliasCache, service common.ServiceType, isDryRun bool, cfg Config, engineData engineVersionData) ([]common.Recommendation, []common.PurchaseResult) { //nolint:unparam // engineData always nil at current callsites but param is part of the API
-	regionsToProcess, err := determineRegionsForService(ctx, awsCfg, recClient, service, cfg.Regions)
+	regionsToProcess, err := determineRegionsForService(ctx, recClient, service, cfg)
 	if err != nil {
 		log.Printf("❌ Failed to determine regions: %v", err)
 		return nil, nil
