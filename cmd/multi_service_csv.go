@@ -354,8 +354,12 @@ func formatIntOrBlank(v int) string {
 // "db.r7g") for an RDS recommendation, empty for any service whose
 // instance type doesn't follow the RDS three-part naming. Useful for
 // grouping rows in the CSV by family-NU bucket so operators can see at
-// a glance which recs belong to the same size-flex family.
+// a glance which recs belong to the same size-flex family. Savings Plan rows
+// report the plan's instance family from their Details.
 func extractRDSFamily(rec common.Recommendation) string {
+	if sp, ok := rec.Details.(*common.SavingsPlanDetails); ok && sp != nil {
+		return sp.InstanceFamily
+	}
 	if rec.Service != common.ServiceRDS && rec.Service != common.ServiceRelationalDB {
 		return ""
 	}

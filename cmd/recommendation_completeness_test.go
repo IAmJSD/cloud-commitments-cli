@@ -174,7 +174,7 @@ func assertSPCompleteness(t *testing.T, output, service, details, logs string) {
 		for j, header := range rows[0] {
 			columns[header] = rows[i+1][j]
 		}
-		for field, want := range map[string]string{"Service": completenessSPService(plan), "Region": "", "ResourceType": "", "Count": "1", "Term": "1yr", "PaymentOption": "no-upfront", "UpfrontPayment": "3.00", "RecurringMonthlyCost": "1460.00", "EstimatedSavings": "10.00", "Success": "true", "Error": ""} {
+		for field, want := range map[string]string{"Service": completenessSPService(plan), "Region": columns["DetailsRegion"], "ResourceType": "", "Count": "1", "Term": "1yr", "PaymentOption": "no-upfront", "UpfrontPayment": "3.00", "RecurringMonthlyCost": "1460.00", "EstimatedSavings": "10.00", "Success": "true", "Error": ""} {
 			require.Equal(t, want, columns[field], "CSV %s; row=%v", field, rows[i+1])
 		}
 	}

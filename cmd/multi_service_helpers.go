@@ -13,6 +13,7 @@ import (
 
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/common"
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/provider"
+	awsprovider "github.com/LeanerCloud/cloud-commitments-go/providers/aws"
 	"github.com/LeanerCloud/cloud-commitments-go/providers/aws/recommendations"
 	azureprovider "github.com/LeanerCloud/cloud-commitments-go/providers/azure"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -550,6 +551,7 @@ func fetchRecommendationsForRegion(
 	}
 
 	recs, err := recClient.GetRecommendations(ctx, &params)
+	stampSavingsPlanRegions(recs)
 	var incomplete *recommendations.IncompleteRecommendationsError
 	if errors.As(err, &incomplete) {
 		AppLogger.Printf("  ⚠️  %v\n", incomplete)
@@ -577,6 +579,18 @@ func fetchRecommendationsForRegion(
 	}
 
 	return recs
+}
+
+// stampSavingsPlanRegions copies the region Cost Explorer reports for an EC2
+// Instance Savings Plan (kept in Details) into Recommendation.Region, which is
+// what the table, CSV and audit log print. Account-level plans have no region
+// and are left empty.
+func stampSavingsPlanRegions(recs []common.Recommendation) {
+	for i := range recs {
+		if recs[i].CommitmentType == common.CommitmentSavingsPlan && recs[i].Region == "" {
+			recs[i].Region = awsprovider.EffectiveRegion(recs[i])
+		}
+	}
 }
 
 // populateRecommendationAccountNames populates account names from account IDs.
