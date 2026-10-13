@@ -15,6 +15,7 @@ import (
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/common"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -400,4 +401,27 @@ func TestProcessCSVRegionPurchases_SavingsPlanRowFromWrittenCSV(t *testing.T) {
 	require.Error(t, results[0].Error)
 	assert.NotContains(t, results[0].Error.Error(), "Details", "details must reach the client")
 	assert.Contains(t, stub.paths(), "/DescribeSavingsPlansOfferings")
+}
+
+func TestFetchRecommendationsForRegion_SavingsPlanDoesNotFilterOnEndpointRegion(t *testing.T) {
+	captureAppLog(t)
+	for _, tc := range []struct {
+		service    common.ServiceType
+		wantRegion string
+	}{
+		{common.ServiceSavingsPlansEC2Instance, ""},
+		{common.ServiceSavingsPlansCompute, ""},
+		{common.ServiceRDS, spAPIRegion},
+	} {
+		client := &MockRecommendationsClient{}
+		var got *common.RecommendationParams
+		client.On("GetRecommendations", mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) { got = args.Get(1).(*common.RecommendationParams) }).
+			Return([]common.Recommendation{}, nil)
+
+		fetchRecommendationsForRegion(context.Background(), client, tc.service, spAPIRegion, Config{TermYears: 1})
+
+		require.NotNil(t, got, tc.service)
+		assert.Equal(t, tc.wantRegion, got.Region, tc.service)
+	}
 }
