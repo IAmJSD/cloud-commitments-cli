@@ -179,11 +179,11 @@ func parseCSVRecord(record []string, colIdx map[string]int) (common.Recommendati
 		return rec, err
 	}
 
-	if err := parseCSVCount(record, colIdx, &rec.Count); err != nil {
+	if err = parseCSVCount(record, colIdx, &rec.Count); err != nil {
 		return rec, err
 	}
 
-	if err := parseCSVFloat(record, colIdx, "EstimatedSavings", &rec.EstimatedSavings); err != nil {
+	if err = parseCSVFloat(record, colIdx, "EstimatedSavings", &rec.EstimatedSavings); err != nil {
 		return rec, err
 	}
 
