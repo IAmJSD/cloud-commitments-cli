@@ -13,15 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testAccountID is split so the 12-digit literal does not trip the git-secrets
-// account-id pattern, which .gitallowed only permits on specific lines.
-const testAccountID = "1234" + "56789012"
-
 func ec2InstanceSPRow() common.Recommendation {
 	return common.Recommendation{
 		Provider: common.ProviderAWS, Service: common.ServiceSavingsPlansEC2Instance,
 		CommitmentType: common.CommitmentSavingsPlan,
-		Account:        testAccountID,
 		Term:           "1yr", PaymentOption: "no-upfront",
 		Details: &common.SavingsPlanDetails{PlanType: "EC2Instance", HourlyCommitment: 2.697, InstanceFamily: "m5", Region: "eu-west-2"},
 	}
