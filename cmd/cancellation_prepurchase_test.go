@@ -224,3 +224,41 @@ func TestFetchAllRecs_InterruptDuringLastRegionDiscardsItsData(t *testing.T) {
 
 	assert.Empty(t, recs)
 }
+
+// An --exclude-accounts name cannot be matched when the account's name lookup
+// fails. The old code replaced the name with the ID, so the excluded account's
+// recommendations passed the filter and could be purchased.
+func TestFetchAllRecs_AccountFilterWithUnresolvableNameFailsTheRun(t *testing.T) {
+	captureAppLog(t)
+	rec := common.Recommendation{Service: common.ServiceRDS, Region: "us-east-1", Account: "222222222222", ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10}
+	newClient := func() *MockRecommendationsClient {
+		c := &MockRecommendationsClient{}
+		c.On("GetRecommendations", mock.Anything, mock.Anything).Return([]common.Recommendation{rec}, nil)
+		return c
+	}
+	org := &MockOrganizationsClient{}
+	org.On("DescribeAccount", mock.Anything, mock.Anything).Return(nil, errors.New("throttled"))
+	cache := NewAccountAliasCacheWithClient(org)
+	base := Config{Regions: []string{"us-east-1"}, Coverage: 100, TermYears: 1, PaymentOption: "partial-upfront"}
+	run := func(cfg Config) ([]common.Recommendation, error) {
+		recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, newClient(), cache, []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+		return recs, err
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"exclude": func(c *Config) { c.ExcludeAccounts = []string{"sandbox"} },
+		"include": func(c *Config) { c.IncludeAccounts = []string{"production"} },
+	} {
+		cfg := base
+		mutate(&cfg)
+		recs, err := run(cfg)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "throttled", name)
+		assert.Empty(t, recs, name)
+	}
+
+	recs, err := run(base)
+	require.NoError(t, err, "without an account filter the ID stands in for the name")
+	require.Len(t, recs, 1)
+	assert.Equal(t, "222222222222", recs[0].AccountName)
+}

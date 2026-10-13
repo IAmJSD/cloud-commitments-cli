@@ -62,44 +62,53 @@ func NewAccountAliasCacheWithClient(orgClient OrganizationsAPI) *AccountAliasCac
 	}
 }
 
-// GetAccountAlias returns the account alias for an account ID.
+// GetAccountAlias returns the account alias for an account ID, or the ID itself
+// when the name cannot be resolved. For display only: a caller that filters on
+// the name must use ResolveAccountName, because the ID is not the name.
 func (c *AccountAliasCache) GetAccountAlias(ctx context.Context, accountID string) string {
+	name, err := c.ResolveAccountName(ctx, accountID)
+	if err != nil {
+		return accountID
+	}
+	return name
+}
+
+// ResolveAccountName returns the Organizations name of an account. A failed
+// lookup is returned, not cached, so a transient error does not stick for the
+// rest of the run. An account with no name resolves to its ID.
+func (c *AccountAliasCache) ResolveAccountName(ctx context.Context, accountID string) (string, error) {
 	if accountID == "" {
-		return ""
+		return "", nil
 	}
 
 	c.mu.RLock()
 	if alias, ok := c.cache[accountID]; ok {
 		c.mu.RUnlock()
-		return alias
+		return alias, nil
 	}
 	c.mu.RUnlock()
 
-	// Try to fetch from Organizations
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring write lock
 	if alias, ok := c.cache[accountID]; ok {
-		return alias
+		return alias, nil
 	}
 
-	// Try to describe the account
 	result, err := c.orgClient.DescribeAccount(ctx, &organizations.DescribeAccountInput{
 		AccountId: aws.String(accountID),
 	})
 	if err != nil {
-		c.cache[accountID] = accountID // Use ID as fallback
-		return accountID
+		return "", fmt.Errorf("describing account %s: %w", accountID, err)
 	}
 
+	name := accountID
 	if result.Account != nil && result.Account.Name != nil {
-		c.cache[accountID] = *result.Account.Name
-		return *result.Account.Name
+		name = *result.Account.Name
 	}
-
-	c.cache[accountID] = accountID
-	return accountID
+	c.cache[accountID] = name
+	return name, nil
 }
 
 // CalculateTotalInstances calculates the total instance count across recommendations.

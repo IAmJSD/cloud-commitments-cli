@@ -501,7 +501,10 @@ func processRegionRecommendations(
 	AppLogger.Printf("  ✅ Found %d recommendations\n", len(recs))
 
 	// Populate account names
-	populateRecommendationAccountNames(ctx, recs, accountCache)
+	if err := populateRecommendationAccountNames(ctx, recs, accountCache, cfg); err != nil {
+		AppLogger.Printf("  ❌ %v\n", err)
+		return result
+	}
 
 	// Apply filters (drops not tracked on this legacy test-only path).
 	recs = applyRegionFilters(recs, engineData, region, cfg, nil)
@@ -651,12 +654,26 @@ func stampSavingsPlanRegions(recs []common.Recommendation) {
 }
 
 // populateRecommendationAccountNames populates account names from account IDs.
-func populateRecommendationAccountNames(ctx context.Context, recs []common.Recommendation, accountCache *AccountAliasCache) {
+// --include-accounts / --exclude-accounts match on the name, and the account ID
+// is not the name: when either filter is set, a name that cannot be resolved is
+// an error, because carrying on would treat the account as "not excluded". With
+// no account filter the ID stands in for the name, as before.
+func populateRecommendationAccountNames(ctx context.Context, recs []common.Recommendation, accountCache *AccountAliasCache, cfg Config) error {
+	filtering := len(cfg.IncludeAccounts) > 0 || len(cfg.ExcludeAccounts) > 0
 	for i := range recs {
-		if recs[i].Account != "" {
-			recs[i].AccountName = accountCache.GetAccountAlias(ctx, recs[i].Account)
+		if recs[i].Account == "" {
+			continue
 		}
+		name, err := accountCache.ResolveAccountName(ctx, recs[i].Account)
+		if err != nil {
+			if filtering {
+				return fmt.Errorf("cannot apply --include-accounts/--exclude-accounts: %w", err)
+			}
+			name = recs[i].Account
+		}
+		recs[i].AccountName = name
 	}
+	return nil
 }
 
 // applyRegionFilters applies region and instance type filters to recommendations.
@@ -854,7 +871,9 @@ func fetchAndFilterRegionRecs(
 	}
 	AppLogger.Printf("  ✅ Found %d recommendations\n", len(recs))
 
-	populateRecommendationAccountNames(ctx, recs, accountCache)
+	if err := populateRecommendationAccountNames(ctx, recs, accountCache, cfg); err != nil {
+		return nil, fmt.Errorf("%w: %w", errRecommendationFetch, err)
+	}
 	if err := requireRegionInventory(recs, cfg, engineData); err != nil {
 		return nil, err
 	}
