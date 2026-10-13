@@ -547,6 +547,7 @@ func fetchRecommendationsForRegion(
 		// Savings Plans specific filters
 		IncludeSPTypes: cfg.IncludeSPTypes,
 		ExcludeSPTypes: cfg.ExcludeSPTypes,
+		SPAccountScope: cfg.SPAccountScope,
 	}
 
 	recs, err := recClient.GetRecommendations(ctx, &params)
