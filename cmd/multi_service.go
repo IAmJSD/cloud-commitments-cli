@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -188,7 +189,7 @@ func runToolMultiService(ctx context.Context, cfg Config) {
 	// Phase 1: collect all recommendations without purchasing.
 	AppLogger.Printf("\n📥 Fetching recommendations from all services...\n")
 	allRecs, drops, err := fetchAllRecs(ctx, awsCfg, recClient, accountCache, servicesToProcess, engineData, cfg, coverageMap)
-	exitOnExclusionError(err)
+	exitOnFetchError(err)
 	exitIfInterrupted(ctx, "fetching recommendations")
 
 	// Phase 2: score, enforce the run-wide instance cap, and display.
@@ -1051,6 +1052,13 @@ func hasDatabaseRecs(recs []common.Recommendation) bool {
 
 // exitOnExclusionError aborts the run before any purchase when the
 // extended-support exclusion cannot be applied (issue #2147).
+func exitOnFetchError(err error) {
+	if errors.Is(err, errRecommendationFetch) {
+		log.Fatalf("Cannot complete the recommendation fetch: %v", err)
+	}
+	exitOnExclusionError(err)
+}
+
 func exitOnExclusionError(err error) {
 	if err != nil {
 		log.Fatalf("Cannot apply extended-support exclusion: %v", err)

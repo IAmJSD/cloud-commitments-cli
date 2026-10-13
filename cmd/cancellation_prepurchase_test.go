@@ -88,8 +88,9 @@ func TestFetchRecommendationsForRegion_InterruptIsNotReportedAsProviderFailure(t
 	client := &MockRecommendationsClient{}
 	client.On("GetRecommendations", mock.Anything, mock.Anything).Return(nil, ctx.Err())
 
-	got := fetchRecommendationsForRegion(ctx, client, common.ServiceRDS, "us-east-1", Config{TermYears: 1})
+	got, err := fetchRecommendationsForRegion(ctx, client, common.ServiceRDS, "us-east-1", Config{TermYears: 1})
 
+	assert.ErrorIs(t, err, context.Canceled)
 	assert.Nil(t, got)
 	assert.NotContains(t, out.String(), "Failed to fetch recommendations")
 }
@@ -111,20 +112,31 @@ func TestFetchAllRecs_InterruptStopsFanOutAndDiscardsPartialData(t *testing.T) {
 	client.AssertNumberOfCalls(t, "GetRecommendations", 1) // later regions are never queried
 }
 
-func TestFetchAllRecs_ActiveContextProviderErrorStaysRecoverable(t *testing.T) {
-	out := captureAppLog(t)
+func TestFetchAllRecs_ProviderErrorFailsTheRun(t *testing.T) {
+	captureAppLog(t)
 	cfg := Config{Regions: []string{"us-east-1", "us-west-2"}, Coverage: 100, TermYears: 1, PaymentOption: "partial-upfront"}
 	client := &MockRecommendationsClient{}
 	client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "us-east-1" })).
-		Return(nil, errors.New("throttling")).Once()
-	rec := common.Recommendation{Service: common.ServiceRDS, Region: "us-west-2", ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10}
-	client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "us-west-2" })).
-		Return([]common.Recommendation{rec}, nil).Once()
+		Return(nil, errors.New("expired SSO token")).Once()
 
-	recs, _, _ := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+	recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
 
-	assert.Len(t, recs, 1, "a provider error with an active context only loses that region")
-	assert.Contains(t, out.String(), "Failed to fetch recommendations")
+	require.Error(t, err, "a fetch failure must not read as 'no recommendations'")
+	assert.Contains(t, err.Error(), "expired SSO token")
+	assert.Empty(t, recs)
+	client.AssertNumberOfCalls(t, "GetRecommendations", 1)
+}
+
+func TestFetchAllRecs_EmptyResultIsNotAnError(t *testing.T) {
+	captureAppLog(t)
+	cfg := Config{Regions: []string{"us-east-1"}, Coverage: 100, TermYears: 1, PaymentOption: "partial-upfront"}
+	client := &MockRecommendationsClient{}
+	client.On("GetRecommendations", mock.Anything, mock.Anything).Return([]common.Recommendation{}, nil)
+
+	recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+
+	require.NoError(t, err)
+	assert.Empty(t, recs)
 }
 
 func TestCheckDuplicates_InterruptedCheckIsTerminalInDryAndRealRuns(t *testing.T) {
