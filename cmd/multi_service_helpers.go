@@ -13,6 +13,7 @@ import (
 
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/common"
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/provider"
+	awsprovider "github.com/LeanerCloud/cloud-commitments-go/providers/aws"
 	"github.com/LeanerCloud/cloud-commitments-go/providers/aws/recommendations"
 	azureprovider "github.com/LeanerCloud/cloud-commitments-go/providers/azure"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -148,14 +149,74 @@ func applyCommonCoverage(recs []common.Recommendation, coverage float64) []commo
 
 // determineServicesToProcess returns the list of services to process based on flags.
 func determineServicesToProcess(cfg Config) ([]common.ServiceType, error) {
-	if cfg.AllServices {
-		return getAllServices(), nil
+	var services []common.ServiceType
+	switch {
+	case cfg.AllServices:
+		services = getAllServices()
+	case len(cfg.Services) > 0:
+		parsed, err := parseServices(cfg.Services)
+		if err != nil {
+			return nil, err
+		}
+		services = parsed
+	default:
+		// Default to RDS only for backward compatibility
+		return []common.ServiceType{common.ServiceRDS}, nil
 	}
-	if len(cfg.Services) > 0 {
-		return parseServices(cfg.Services)
+	return filterSavingsPlanTypes(services, cfg.IncludeSPTypes, cfg.ExcludeSPTypes)
+}
+
+// spTypeServices maps the --include-sp-types / --exclude-sp-types names
+// (matched case-insensitively) to the per-plan-type service slugs.
+var spTypeServices = map[string]common.ServiceType{
+	"compute":     common.ServiceSavingsPlansCompute,
+	"ec2instance": common.ServiceSavingsPlansEC2Instance,
+	"sagemaker":   common.ServiceSavingsPlansSageMaker,
+	"database":    common.ServiceSavingsPlansDatabase,
+}
+
+// spTypeSet resolves --include-sp-types / --exclude-sp-types names to services.
+func spTypeSet(flag string, names []string) (map[common.ServiceType]bool, error) {
+	set := make(map[common.ServiceType]bool, len(names))
+	for _, name := range names {
+		service, ok := spTypeServices[strings.ToLower(strings.TrimSpace(name))]
+		if !ok {
+			return nil, fmt.Errorf("unknown Savings Plan type %q in %s; valid types: Compute, EC2Instance, SageMaker, Database", name, flag)
+		}
+		set[service] = true
 	}
-	// Default to RDS only for backward compatibility
-	return []common.ServiceType{common.ServiceRDS}, nil
+	return set, nil
+}
+
+// filterSavingsPlanTypes drops the Savings Plan services that
+// --include-sp-types / --exclude-sp-types rule out, so only the requested
+// plan types are fetched. Each per-plan-type service queries exactly one plan
+// type and the provider ignores the include/exclude lists for it, so the
+// narrowing has to happen on the service list. Non-SP services pass through.
+func filterSavingsPlanTypes(services []common.ServiceType, include, exclude []string) ([]common.ServiceType, error) {
+	includeSet, err := spTypeSet("--include-sp-types", include)
+	if err != nil {
+		return nil, err
+	}
+	excludeSet, err := spTypeSet("--exclude-sp-types", exclude)
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]common.ServiceType, 0, len(services))
+	for _, service := range services {
+		if common.IsSavingsPlan(service) && !spTypeWanted(service, includeSet, excludeSet) {
+			continue
+		}
+		kept = append(kept, service)
+	}
+	return kept, nil
+}
+
+func spTypeWanted(service common.ServiceType, includeSet, excludeSet map[common.ServiceType]bool) bool {
+	if len(includeSet) > 0 && !includeSet[service] {
+		return false
+	}
+	return !excludeSet[service]
 }
 
 // printRunMode prints the current run mode (dry run or purchase).
@@ -540,7 +601,6 @@ func fetchRecommendationsForRegion(
 	}
 	params := common.RecommendationParams{
 		Service:        service,
-		Region:         region,
 		PaymentOption:  cfg.PaymentOption,
 		Term:           termStr,
 		LookbackPeriod: lookback,
@@ -548,8 +608,16 @@ func fetchRecommendationsForRegion(
 		IncludeSPTypes: cfg.IncludeSPTypes,
 		ExcludeSPTypes: cfg.ExcludeSPTypes,
 	}
+	// For Savings Plans, region is only the endpoint the account-level call is
+	// signed in (spAPIRegion), not a filter. The provider folds params.Region
+	// into its include-region set, which would drop every EC2 Instance plan
+	// recommended outside that endpoint region.
+	if !common.IsSavingsPlan(service) {
+		params.Region = region
+	}
 
 	recs, err := recClient.GetRecommendations(ctx, &params)
+	stampSavingsPlanRegions(recs)
 	var incomplete *recommendations.IncompleteRecommendationsError
 	if errors.As(err, &incomplete) {
 		AppLogger.Printf("  ⚠️  %v\n", incomplete)
@@ -577,6 +645,18 @@ func fetchRecommendationsForRegion(
 	}
 
 	return recs
+}
+
+// stampSavingsPlanRegions copies the region Cost Explorer reports for an EC2
+// Instance Savings Plan (kept in Details) into Recommendation.Region, which is
+// what the table, CSV and audit log print. Account-level plans have no region
+// and are left empty.
+func stampSavingsPlanRegions(recs []common.Recommendation) {
+	for i := range recs {
+		if recs[i].CommitmentType == common.CommitmentSavingsPlan && recs[i].Region == "" {
+			recs[i].Region = awsprovider.EffectiveRegion(recs[i])
+		}
+	}
 }
 
 // populateRecommendationAccountNames populates account names from account IDs.
