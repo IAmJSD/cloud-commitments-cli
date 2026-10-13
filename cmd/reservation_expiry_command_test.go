@@ -148,7 +148,7 @@ func (p *completenessProxy) reservationExpiryResponse(host, op string, body []by
 		case "AWSInsightsIndexService.GetReservationPurchaseRecommendation":
 			var request map[string]any
 			require.NoError(p.t, json.Unmarshal(body, &request))
-			require.Equal(p.t, map[string]any{"Service": "Amazon Elastic Compute Cloud - Compute", "AccountScope": "LINKED", "TermInYears": "ONE_YEAR", "PaymentOption": "PARTIAL_UPFRONT", "LookbackPeriodInDays": "SEVEN_DAYS"}, request)
+			require.Equal(p.t, map[string]any{"Service": "Amazon Elastic Compute Cloud - Compute", "AccountScope": "LINKED", "TermInYears": "ONE_YEAR", "PaymentOption": "PARTIAL_UPFRONT", "LookbackPeriodInDays": "SEVEN_DAYS", "ServiceSpecification": map[string]any{"EC2Specification": map[string]any{"OfferingClass": "CONVERTIBLE"}}}, request)
 			var details []map[string]any
 			for i := 0; i < s.rows; i++ {
 				details = append(details, map[string]any{

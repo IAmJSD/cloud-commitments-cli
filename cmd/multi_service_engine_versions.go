@@ -504,11 +504,29 @@ func adjustRecommendationForExcludedVersions(rec common.Recommendation, instance
 		if newCount != originalCount {
 			log.Printf("📉 Adjusting recommendation for %s %s in %s: %d instances → %d instances (excluded %d extended support instances)",
 				recEngine, rec.ResourceType, rec.Region, originalCount, newCount, excludedCount)
-			rec.Count = newCount
+			return resizeAfterExclusion(rec, newCount)
 		}
 	}
 
 	return rec
+}
+
+// resizeAfterExclusion sets rec to newCount instances with its money fields
+// scaled to match. A count of zero is the caller's drop signal and carries no
+// money. A resize that common.ResizeCount refuses is also returned as zero
+// rather than as a count with unscaled money.
+func resizeAfterExclusion(rec common.Recommendation, newCount int) common.Recommendation {
+	if newCount < 1 {
+		rec.Count = 0
+		return rec
+	}
+	resized, err := common.ResizeCount(rec, newCount)
+	if err != nil {
+		log.Printf("❌ Dropping recommendation after extended-support exclusion: %v", err)
+		rec.Count = 0
+		return rec
+	}
+	return resized
 }
 
 // shouldExcludeForExtendedSupport reports whether a single running instance
