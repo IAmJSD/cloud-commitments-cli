@@ -34,7 +34,6 @@ func TestCheckPurchaseAccount(t *testing.T) {
 
 	rec.Account = testCallerAccount
 	require.Error(t, checkPurchaseAccount(rec, ""), "an unresolved caller account must not disable the check")
-
 }
 
 func TestPurchaseSingleRec_RefusesOtherAccountsRecommendation(t *testing.T) {

@@ -14,16 +14,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestMain overrides toolCfg.AuditLog's cobra-registered default
-// ("./cudly-audit.jsonl", relative to the process working directory) before
-// any test in this package runs. Since #1609, processPurchaseLoop (shared by
-// the --input-csv path and the legacy per-region purchase path) writes a real
-// audit record via cfg.AuditLog on every dry-run and real purchase attempt.
-// Without this override, any test that reaches that loop without setting its
-// own AuditLog would silently create/append to a stray cmd/cudly-audit.jsonl
-// file in the repo working directory on every `go test` run. Tests that need
-// to assert on audit-log contents still set their own t.TempDir()-scoped
-// AuditLog, which takes precedence within that test.
 // defaultTestAccount is the account the stubbed credentials belong to.
 const defaultTestAccount = "111111111111"
 
@@ -37,9 +27,28 @@ func wantPurchaseOutcome(account string) (success, errMsg string) {
 	return "false", fmt.Sprintf("recommendation is for account %s but the credentials are for account %s; cross-account purchases are not supported, so run with credentials for account %s", account, defaultTestAccount, account)
 }
 
+// useCallerAccount gives toolCfg the stubbed credentials' account for one test,
+// for tests that call the purchase loops directly instead of through an entry
+// point (which resolves the account itself).
+func useCallerAccount(t *testing.T) {
+	t.Helper()
+	prev := toolCfg.CallerAccountID
+	toolCfg.CallerAccountID = defaultTestAccount
+	t.Cleanup(func() { toolCfg.CallerAccountID = prev })
+}
+
+// TestMain overrides toolCfg.AuditLog's cobra-registered default
+// ("./cudly-audit.jsonl", relative to the process working directory) before
+// any test in this package runs. Since #1609, processPurchaseLoop (shared by
+// the --input-csv path and the legacy per-region purchase path) writes a real
+// audit record via cfg.AuditLog on every dry-run and real purchase attempt.
+// Without this override, any test that reaches that loop without setting its
+// own AuditLog would silently create/append to a stray cmd/cudly-audit.jsonl
+// file in the repo working directory on every `go test` run. Tests that need
+// to assert on audit-log contents still set their own t.TempDir()-scoped
+// AuditLog, which takes precedence within that test.
 func TestMain(m *testing.M) {
 	toolCfg.AuditLog = filepath.Join(os.TempDir(), fmt.Sprintf("cudly-test-audit-%d.jsonl", os.Getpid()))
-	toolCfg.CallerAccountID = defaultTestAccount
 	// Keep tests off AWS: the real fetcher is exercised explicitly against a
 	// local stub (useRealEngineVersionFetcher).
 	engineVersionFetcher = func(context.Context, Config, bool) (engineVersionData, error) {

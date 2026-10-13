@@ -207,6 +207,7 @@ func TestProcessService_EdgeCases(t *testing.T) {
 
 // TestProcessServiceWithMocks tests the processService function using mocks.
 func TestProcessServiceWithMocks(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	awsCfg := aws.Config{Region: "us-east-1"}
 
@@ -1258,6 +1259,7 @@ func TestWriteMultiServiceCSVReport_MultipleResults(t *testing.T) {
 // ==================== Additional ProcessPurchaseLoop Tests ====================
 
 func TestProcessPurchaseLoopPurchaseFailure(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	origCfg := toolCfg
 	defer func() { toolCfg = origCfg }()
@@ -1308,6 +1310,7 @@ func TestProcessPurchaseLoopEmptyRecommendations(t *testing.T) {
 }
 
 func TestProcessServicePurchasesUserCancellation(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	origCfg := toolCfg
 	defer func() { toolCfg = origCfg }()
@@ -1340,6 +1343,7 @@ func TestProcessServicePurchasesUserCancellation(t *testing.T) {
 }
 
 func TestProcessServicePurchasesDryRunMultiple(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	origCfg := toolCfg
 	defer func() { toolCfg = origCfg }()
@@ -1412,6 +1416,7 @@ func TestExecutePurchaseWithEmptyPurchaseID(t *testing.T) {
 }
 
 func TestProcessPurchaseLoopDryRun(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	// Save original values
 	origCfg := toolCfg
@@ -1447,6 +1452,7 @@ func TestProcessPurchaseLoopDryRun(t *testing.T) {
 }
 
 func TestProcessPurchaseLoopActualPurchase(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	// Save original values
 	origCfg := toolCfg
@@ -1492,6 +1498,7 @@ func TestProcessPurchaseLoopActualPurchase(t *testing.T) {
 }
 
 func TestProcessPurchaseLoopWithConfirmation(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	// Save original values
 	origCfg := toolCfg
@@ -1952,6 +1959,7 @@ rds,us-east-1,db.t3.small,postgres,2,1yr,All Upfront,111111111111
 // TestProcessPurchaseLoopActualPurchase already uses to test this loop's
 // purchase behavior without live AWS credentials.
 func TestProcessPurchaseLoop_WritesAuditRecordForRealPurchase(t *testing.T) {
+	useCallerAccount(t)
 	tests := []struct {
 		result     common.PurchaseResult
 		name       string
