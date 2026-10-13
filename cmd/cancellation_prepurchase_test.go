@@ -51,7 +51,7 @@ func TestFilterAndAdjustRecommendations_CancellationAndDeadlineAreTerminal(t *te
 func TestPrepareCSVPurchaseRun_CanceledContextStopsBeforeConfirmationAndPurchase(t *testing.T) {
 	dir := t.TempDir()
 	csvPath := filepath.Join(dir, "in.csv")
-	require.NoError(t, os.WriteFile(csvPath, []byte("Service,Region,ResourceType,Count,Engine\nrds,us-east-1,db.t3.small,2,mysql\n"), 0o600))
+	require.NoError(t, os.WriteFile(csvPath, []byte("Service,Region,ResourceType,Count,Engine,Term,PaymentOption\nrds,us-east-1,db.t3.small,2,mysql,1yr,no-upfront\n"), 0o600))
 	cfg := Config{CSVInput: csvPath, AuditLog: filepath.Join(dir, "audit.jsonl")}
 
 	for _, dry := range []bool{true, false} {
