@@ -99,7 +99,7 @@ func TestGetAccountAlias(t *testing.T) {
 			shouldCache: true,
 		},
 		{
-			name:      "Account not found - uses ID as fallback",
+			name:      "Lookup error - GetAccountAlias shows the ID, uncached",
 			accountID: "999888777666",
 			mockSetup: func(m *MockOrganizationsClient) {
 				m.On("DescribeAccount", ctx, &organizations.DescribeAccountInput{
@@ -107,7 +107,7 @@ func TestGetAccountAlias(t *testing.T) {
 				}).Return(nil, errors.New("account not found")).Once()
 			},
 			expected:    "999888777666",
-			shouldCache: true,
+			shouldCache: false, // a failed lookup is not remembered
 		},
 		{
 			name:      "Account with nil name - uses ID as fallback",
@@ -1402,4 +1402,19 @@ func TestApplyTargetCoverage_DropTargetSizedToZero(t *testing.T) {
 	assert.Equal(t, 1, d.Total(), "drop summary should record 1 drop")
 	assert.Contains(t, d.FormatOneLine(), common.DropTargetSizedToZero,
 		"drop summary should name the target-sized-to-zero category")
+}
+
+func TestResolveAccountName_LookupErrorIsReturnedAndRememberedForTheRun(t *testing.T) {
+	ctx := context.Background()
+	org := &MockOrganizationsClient{}
+	org.On("DescribeAccount", ctx, &organizations.DescribeAccountInput{AccountId: aws.String("999888777666")}).
+		Return(nil, errors.New("AccessDenied")).Once() // a second call would fail the mock
+
+	cache := NewAccountAliasCacheWithClient(org)
+
+	for range 3 {
+		_, err := cache.ResolveAccountName(ctx, "999888777666")
+		require.ErrorContains(t, err, "AccessDenied")
+	}
+	org.AssertExpectations(t)
 }

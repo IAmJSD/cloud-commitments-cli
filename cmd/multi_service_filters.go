@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -103,7 +105,7 @@ func passesDimensionFilters(rec *common.Recommendation, cfg *Config) bool {
 	if !shouldIncludeEngine(rec, cfg) {
 		return false
 	}
-	return shouldIncludeAccount(rec.AccountName, cfg)
+	return shouldIncludeAccountIDOrName(rec.Account, rec.AccountName, cfg)
 }
 
 // shouldIncludePoolSize checks if a recommendation's pool size meets cfg.MinPoolSize.
@@ -168,49 +170,58 @@ func shouldIncludeEngine(rec *common.Recommendation, cfg *Config) bool {
 
 // shouldIncludeAccount checks if an account should be included based on filters.
 func shouldIncludeAccount(accountName string, cfg *Config) bool {
-	// If account name is empty and there are filters, skip it (unless include list is empty).
-	if accountName == "" {
+	return shouldIncludeAccountIDOrName("", accountName, cfg)
+}
+
+// shouldIncludeAccountIDOrName applies --include-accounts / --exclude-accounts
+// to an account, matching each filter value against the account ID (exactly)
+// and the account name (case-insensitive substring). Name-based values are
+// only decidable once the name is known; requireResolvedAccountNames fails the
+// run before this point when it is not.
+func shouldIncludeAccountIDOrName(accountID, accountName string, cfg *Config) bool {
+	// If the account is unidentified and there are filters, skip it.
+	if accountID == "" && accountName == "" {
 		return len(cfg.IncludeAccounts) == 0 && len(cfg.ExcludeAccounts) == 0
 	}
-
-	accountLower := strings.ToLower(accountName)
-
-	// Check include list.
-	if !checkIncludeList(accountLower, cfg.IncludeAccounts) {
-		return false
-	}
-
-	// Check exclude list.
-	if checkExcludeList(accountLower, cfg.ExcludeAccounts) {
-		return false
-	}
-
-	return true
-}
-
-// checkIncludeList checks if an account matches the include filters.
-func checkIncludeList(accountLower string, includeAccounts []string) bool {
-	if len(includeAccounts) == 0 {
-		return true
-	}
-
-	for _, filter := range includeAccounts {
-		if accountMatchesFilter(accountLower, filter) {
+	matches := func(filter string) bool {
+		if accountID != "" && strings.EqualFold(accountID, filter) {
 			return true
 		}
+		return accountName != "" && accountMatchesFilter(strings.ToLower(accountName), filter)
 	}
-
-	return false
+	if len(cfg.IncludeAccounts) > 0 && !slices.ContainsFunc(cfg.IncludeAccounts, matches) {
+		return false
+	}
+	return !slices.ContainsFunc(cfg.ExcludeAccounts, matches)
 }
 
-// checkExcludeList checks if an account matches any exclude filters.
-func checkExcludeList(accountLower string, excludeAccounts []string) bool {
-	for _, filter := range excludeAccounts {
-		if accountMatchesFilter(accountLower, filter) {
-			return true
+// accountIDPattern matches the 12-digit AWS account ID, the only filter value
+// that can be decided without the account's name.
+var accountIDPattern = regexp.MustCompile(`^\d{12}$`)
+
+// requireResolvedAccountNames fails when an account filter holds a name and a
+// recommendation's account name is unknown (its name lookup failed, so the ID
+// stands in for it, or the CSV row carries no name). Such a recommendation
+// cannot be matched against the name, and carrying on would treat an excluded
+// account as "not excluded". Filters made only of account IDs never need the
+// name.
+func requireResolvedAccountNames(recs []common.Recommendation, cfg *Config) error {
+	nameFilter := ""
+	for _, v := range slices.Concat(cfg.IncludeAccounts, cfg.ExcludeAccounts) {
+		if !accountIDPattern.MatchString(v) {
+			nameFilter = v
+			break
 		}
 	}
-	return false
+	if nameFilter == "" {
+		return nil
+	}
+	for i := range recs {
+		if recs[i].Account != "" && (recs[i].AccountName == "" || recs[i].AccountName == recs[i].Account) {
+			return fmt.Errorf("cannot apply the account filter %q: the name of account %s is unknown (organizations:DescribeAccount failed or the CSV row has no name); filter by account ID instead, or fix the access", nameFilter, recs[i].Account)
+		}
+	}
+	return nil
 }
 
 // accountMatchesFilter checks if an account matches a filter pattern (exact or substring match).

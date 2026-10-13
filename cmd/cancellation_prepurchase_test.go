@@ -224,3 +224,97 @@ func TestFetchAllRecs_InterruptDuringLastRegionDiscardsItsData(t *testing.T) {
 
 	assert.Empty(t, recs)
 }
+
+// An --exclude-accounts name cannot be matched when the account's name lookup
+// fails. The old code replaced the name with the ID, so the excluded account's
+// recommendations passed the filter and could be purchased.
+func TestFetchAllRecs_AccountFilters(t *testing.T) {
+	captureAppLog(t)
+	rec := func(account string) common.Recommendation {
+		return common.Recommendation{Service: common.ServiceRDS, Region: "us-east-1", Account: account, ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10}
+	}
+	base := Config{Regions: []string{"us-east-1"}, Coverage: 100, TermYears: 1, PaymentOption: "partial-upfront"}
+	// Member accounts cannot call DescribeAccount: every lookup is denied.
+	run := func(t *testing.T, cfg Config, accounts ...string) (accountsOut []string, orgCalls int, err error) {
+		t.Helper()
+		found := make([]common.Recommendation, 0, len(accounts))
+		for _, a := range accounts {
+			found = append(found, rec(a))
+		}
+		client := &MockRecommendationsClient{}
+		client.On("GetRecommendations", mock.Anything, mock.Anything).Return(found, nil)
+		org := &MockOrganizationsClient{}
+		org.On("DescribeAccount", mock.Anything, mock.Anything).Return(nil, errors.New("AccessDenied"))
+		recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCacheWithClient(org), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+		for i := range recs {
+			accountsOut = append(accountsOut, recs[i].Account)
+		}
+		return accountsOut, len(org.Calls), err
+	}
+
+	t.Run("name-based exclude with a failed lookup fails the run", func(t *testing.T) {
+		cfg := base
+		cfg.ExcludeAccounts = []string{"sandbox"}
+		got, _, err := run(t, cfg, testCallerAccount)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), testCallerAccount)
+		assert.Empty(t, got)
+	})
+	t.Run("name-based include with a failed lookup fails the run", func(t *testing.T) {
+		cfg := base
+		cfg.IncludeAccounts = []string{"production"}
+		_, _, err := run(t, cfg, testCallerAccount)
+		require.Error(t, err)
+	})
+	t.Run("ID-based exclude works without names", func(t *testing.T) {
+		cfg := base
+		cfg.ExcludeAccounts = []string{testCallerAccount}
+		got, _, err := run(t, cfg, testCallerAccount, otherAccount)
+		require.NoError(t, err)
+		assert.Equal(t, []string{otherAccount}, got)
+	})
+	t.Run("ID-based include works without names", func(t *testing.T) {
+		cfg := base
+		cfg.IncludeAccounts = []string{otherAccount}
+		got, _, err := run(t, cfg, testCallerAccount, otherAccount)
+		require.NoError(t, err)
+		assert.Equal(t, []string{otherAccount}, got)
+	})
+	t.Run("no filter keeps the ID as the name", func(t *testing.T) {
+		got, _, err := run(t, base, testCallerAccount)
+		require.NoError(t, err)
+		assert.Equal(t, []string{testCallerAccount}, got)
+	})
+	t.Run("a lasting lookup failure costs one call per account", func(t *testing.T) {
+		cfg := base
+		cfg.ExcludeAccounts = []string{testCallerAccount}
+		accounts := make([]string, 20)
+		for i := range accounts {
+			accounts[i] = otherAccount
+		}
+		_, calls, err := run(t, cfg, accounts...)
+		require.NoError(t, err)
+		assert.Equal(t, 1, calls)
+	})
+}
+
+func TestRequireResolvedAccountNames_CSVRows(t *testing.T) {
+	rows := []common.Recommendation{{Account: testCallerAccount, AccountName: testCallerAccount}}
+	// The CSV wrote the ID where the name lookup had failed.
+	require.Error(t, requireResolvedAccountNames(rows, &Config{ExcludeAccounts: []string{"sandbox"}}))
+	require.NoError(t, requireResolvedAccountNames(rows, &Config{ExcludeAccounts: []string{testCallerAccount}}))
+	require.NoError(t, requireResolvedAccountNames(rows, &Config{}))
+	named := []common.Recommendation{{Account: testCallerAccount, AccountName: "sandbox"}}
+	require.NoError(t, requireResolvedAccountNames(named, &Config{ExcludeAccounts: []string{"sandbox"}}))
+	assert.False(t, shouldIncludeAccountIDOrName(testCallerAccount, "sandbox", &Config{ExcludeAccounts: []string{testCallerAccount}}), "an ID filter matches a named account")
+}
+
+func TestFilterAndAdjustRecommendations_NameExcludeOnCSVRowsWithoutNamesFails(t *testing.T) {
+	captureAppLog(t)
+	rows := []common.Recommendation{{Service: common.ServiceRDS, Region: "us-east-1", Account: testCallerAccount, AccountName: testCallerAccount, ResourceType: "db.t3.small", Count: 2}}
+
+	recs, err := filterAndAdjustRecommendations(context.Background(), rows, 100, Config{ExcludeAccounts: []string{"sandbox"}, IncludeExtendedSupport: true})
+
+	require.Error(t, err, "replay must not let an excluded account through because its name is missing")
+	assert.Empty(t, recs)
+}

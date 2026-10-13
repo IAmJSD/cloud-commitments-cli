@@ -912,7 +912,7 @@ func filterAndAdjustRecommendations(ctx context.Context, recs []common.Recommend
 	if err != nil {
 		return nil, err
 	}
-	if err := requireRegionInventory(recs, cfg, engineData); err != nil {
+	if err := requireFilterInputs(recs, cfg, engineData); err != nil {
 		return nil, err
 	}
 
@@ -945,6 +945,16 @@ func filterAndAdjustRecommendations(ctx context.Context, recs []common.Recommend
 
 	// Enforce --min-count and the run-wide --max-instances cap.
 	return scoreAndLimitCSVRecs(recs, cfg)
+}
+
+// requireFilterInputs fails when the data the filters need is missing: RDS
+// inventory for the extended-support exclusion, and account names for
+// name-based account filters.
+func requireFilterInputs(recs []common.Recommendation, cfg Config, engineData engineVersionData) error {
+	if err := requireRegionInventory(recs, cfg, engineData); err != nil {
+		return err
+	}
+	return requireResolvedAccountNames(recs, &cfg)
 }
 
 // processService processes a single service and returns recommendations and results.

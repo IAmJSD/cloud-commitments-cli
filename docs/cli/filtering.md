@@ -22,7 +22,9 @@ The conflict check is NOT applied to `--include-accounts`/`--exclude-accounts` o
 --exclude-accounts  Exclude recommendations for these account names (comma-separated)
 ```
 
-Account names are matched against the friendly alias resolved from AWS Organizations (`organizations:DescribeAccount`, called per account ID and cached). If the alias cannot be resolved, the account ID is used as a fallback.
+Each filter value is matched against the account ID (exactly) and against the account name (case-insensitive, substring). The name is the friendly name from AWS Organizations (`organizations:DescribeAccount`, called once per account ID per run). Member accounts usually cannot call it, so filter by account ID there.
+
+When a filter value is a name (anything other than a 12-digit account ID) and an account's name cannot be resolved, cudly stops with an error instead of guessing: carrying on would treat an account you excluded as "not excluded". ID-only filters never need the name. The same rule applies to `--input-csv` replay, where the name comes from the CSV's `AccountName` column; a row whose name column holds the account ID counts as unresolved.
 
 ```bash
 # Only process two accounts

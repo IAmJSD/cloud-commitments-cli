@@ -42,6 +42,7 @@ type AccountAliasGetter interface {
 type AccountAliasCache struct {
 	orgClient OrganizationsAPI
 	cache     map[string]string
+	failed    map[string]error // lookups that failed this run, so a lasting failure costs one call per account
 	mu        sync.RWMutex
 }
 
@@ -49,6 +50,7 @@ type AccountAliasCache struct {
 func NewAccountAliasCache(cfg aws.Config) *AccountAliasCache {
 	return &AccountAliasCache{
 		cache:     make(map[string]string),
+		failed:    make(map[string]error),
 		orgClient: organizations.NewFromConfig(cfg),
 	}
 }
@@ -58,48 +60,68 @@ func NewAccountAliasCache(cfg aws.Config) *AccountAliasCache {
 func NewAccountAliasCacheWithClient(orgClient OrganizationsAPI) *AccountAliasCache {
 	return &AccountAliasCache{
 		cache:     make(map[string]string),
+		failed:    make(map[string]error),
 		orgClient: orgClient,
 	}
 }
 
-// GetAccountAlias returns the account alias for an account ID.
+// GetAccountAlias returns the account alias for an account ID, or the ID itself
+// when the name cannot be resolved. For display only: a caller that filters on
+// the name must use ResolveAccountName, because the ID is not the name.
 func (c *AccountAliasCache) GetAccountAlias(ctx context.Context, accountID string) string {
+	name, err := c.ResolveAccountName(ctx, accountID)
+	if err != nil {
+		return accountID
+	}
+	return name
+}
+
+// ResolveAccountName returns the Organizations name of an account. A failed
+// lookup is returned, and remembered for the rest of the run so a lasting
+// failure (member accounts cannot call DescribeAccount) costs one call per
+// account. An account with no name resolves to its ID.
+func (c *AccountAliasCache) ResolveAccountName(ctx context.Context, accountID string) (string, error) {
 	if accountID == "" {
-		return ""
+		return "", nil
 	}
 
 	c.mu.RLock()
 	if alias, ok := c.cache[accountID]; ok {
 		c.mu.RUnlock()
-		return alias
+		return alias, nil
+	}
+	if err, ok := c.failed[accountID]; ok {
+		c.mu.RUnlock()
+		return "", err
 	}
 	c.mu.RUnlock()
 
-	// Try to fetch from Organizations
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring write lock
 	if alias, ok := c.cache[accountID]; ok {
-		return alias
+		return alias, nil
+	}
+	if err, ok := c.failed[accountID]; ok {
+		return "", err
 	}
 
-	// Try to describe the account
 	result, err := c.orgClient.DescribeAccount(ctx, &organizations.DescribeAccountInput{
 		AccountId: aws.String(accountID),
 	})
 	if err != nil {
-		c.cache[accountID] = accountID // Use ID as fallback
-		return accountID
+		err = fmt.Errorf("describing account %s: %w", accountID, err)
+		c.failed[accountID] = err
+		return "", err
 	}
 
+	name := accountID
 	if result.Account != nil && result.Account.Name != nil {
-		c.cache[accountID] = *result.Account.Name
-		return *result.Account.Name
+		name = *result.Account.Name
 	}
-
-	c.cache[accountID] = accountID
-	return accountID
+	c.cache[accountID] = name
+	return name, nil
 }
 
 // CalculateTotalInstances calculates the total instance count across recommendations.

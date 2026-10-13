@@ -501,7 +501,10 @@ func processRegionRecommendations(
 	AppLogger.Printf("  ✅ Found %d recommendations\n", len(recs))
 
 	// Populate account names
-	populateRecommendationAccountNames(ctx, recs, accountCache)
+	if err := populateRecommendationAccountNames(ctx, recs, accountCache, cfg); err != nil {
+		AppLogger.Printf("  ❌ %v\n", err)
+		return result
+	}
 
 	// Apply filters (drops not tracked on this legacy test-only path).
 	recs = applyRegionFilters(recs, engineData, region, cfg, nil)
@@ -651,12 +654,17 @@ func stampSavingsPlanRegions(recs []common.Recommendation) {
 }
 
 // populateRecommendationAccountNames populates account names from account IDs.
-func populateRecommendationAccountNames(ctx context.Context, recs []common.Recommendation, accountCache *AccountAliasCache) {
+// An account whose name cannot be resolved gets its ID as the name (member
+// accounts cannot call organizations:DescribeAccount). That is fine for
+// ID-based account filters; requireResolvedAccountNames fails the run when a
+// name-based --include-accounts / --exclude-accounts value needs the name.
+func populateRecommendationAccountNames(ctx context.Context, recs []common.Recommendation, accountCache *AccountAliasCache, cfg Config) error {
 	for i := range recs {
 		if recs[i].Account != "" {
 			recs[i].AccountName = accountCache.GetAccountAlias(ctx, recs[i].Account)
 		}
 	}
+	return requireResolvedAccountNames(recs, &cfg)
 }
 
 // applyRegionFilters applies region and instance type filters to recommendations.
@@ -854,7 +862,9 @@ func fetchAndFilterRegionRecs(
 	}
 	AppLogger.Printf("  ✅ Found %d recommendations\n", len(recs))
 
-	populateRecommendationAccountNames(ctx, recs, accountCache)
+	if err := populateRecommendationAccountNames(ctx, recs, accountCache, cfg); err != nil {
+		return nil, fmt.Errorf("%w: %w", errRecommendationFetch, err)
+	}
 	if err := requireRegionInventory(recs, cfg, engineData); err != nil {
 		return nil, err
 	}
