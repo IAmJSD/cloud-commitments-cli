@@ -28,7 +28,7 @@ func TestRecommendationCompletenessCommand(t *testing.T) {
 		runCompletenessCommandChild(t)
 		return
 	}
-	for _, regionMode := range []string{"explicit", "default", "fallback"} {
+	for _, regionMode := range []string{"explicit", "default"} {
 		for _, details := range []string{"valid", "mixed", "all-invalid", "empty", "api-error"} {
 			t.Run(regionMode+"/"+details, func(t *testing.T) {
 				runCompletenessScenario(t, "rds", regionMode, details)
@@ -90,7 +90,7 @@ func runCompletenessScenario(t *testing.T, service, regionMode, details string) 
 	case rdsExpiryService:
 		assertRDSExpiryCSV(t, output, details, logs)
 	case "rds":
-		assertCompletenessDiagnostics(t, regionMode, details, stdout.String(), stderr.String())
+		assertCompletenessDiagnostics(t, details, stdout.String(), stderr.String())
 		assertCompletenessCSV(t, output, details, logs)
 	default:
 		assertSPCompleteness(t, output, service, details, logs)
@@ -183,20 +183,13 @@ func assertSPCompleteness(t *testing.T, output, service, details, logs string) {
 	require.Contains(t, logs, "CSV report written")
 }
 
-func assertCompletenessDiagnostics(t *testing.T, regionMode, details, stdout, stderr string) {
+func assertCompletenessDiagnostics(t *testing.T, details, stdout, stderr string) {
 	t.Helper()
 	malformed := details == "mixed" || details == "all-invalid"
 	if malformed {
-		count := 1
-		if regionMode == "fallback" {
-			count = 6
-		}
-		want := fmt.Sprintf("incomplete AWS recommendations: %d failed details, 0 failed scopes:", count)
+		want := "incomplete AWS recommendations: 1 failed details, 0 failed scopes:"
 		for _, diagnostic := range []string{want, "not-a-number", "detail"} {
 			require.Contains(t, stdout, diagnostic, "stderr: %s", stderr)
-		}
-		if regionMode == "fallback" {
-			require.Contains(t, stdout, "Region discovery incomplete")
 		}
 	} else {
 		require.NotContains(t, stdout, "incomplete AWS recommendations")
@@ -253,9 +246,8 @@ func TestRecommendationCompletenessHelpers(t *testing.T) {
 			t.Cleanup(func() { AppLogger.SetOutput(previous) })
 			ctx := context.Background()
 			client := &MockRecommendationsClient{}
-			client.On("GetRecommendationsForService", ctx, common.ServiceRDS).Return(tc.recs, tc.err)
 			client.On("GetRecommendations", ctx, mock.Anything).Return(tc.recs, tc.err)
-			regions, err := discoverRegionsForService(ctx, client, common.ServiceRDS)
+			regions, err := discoverRegionsForService(ctx, client, common.ServiceRDS, Config{TermYears: 1})
 			got, fetchErr := fetchRecommendationsForRegion(ctx, client, common.ServiceRDS, "us-east-1", Config{TermYears: 1})
 			if !tc.keep {
 				require.ErrorIs(t, err, tc.err)

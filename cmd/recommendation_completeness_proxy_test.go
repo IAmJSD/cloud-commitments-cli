@@ -185,9 +185,8 @@ func (p *completenessProxy) respond(req *http.Request) *http.Response {
 	}
 	p.mu.Lock()
 	p.requests[op]++
-	call := p.requests[op]
 	p.mu.Unlock()
-	status, contentType, payload := p.operation(req.Host, op, call)
+	status, contentType, payload := p.operation(req.Host, op)
 	if p.service != "rds" && req.Host == "ce.us-east-1.amazonaws.com" && op == "AWSInsightsIndexService.GetSavingsPlansPurchaseRecommendation" {
 		status, contentType, payload = p.spRecommendation(body)
 	}
@@ -196,7 +195,7 @@ func (p *completenessProxy) respond(req *http.Request) *http.Response {
 		Body:   io.NopCloser(strings.NewReader(payload)), ContentLength: int64(len(payload))}
 }
 
-func (p *completenessProxy) operation(host, op string, call int) (int, string, string) {
+func (p *completenessProxy) operation(host, op string) (int, string, string) {
 	responses := map[string]string{
 		"DescribeDBInstances":           "DBInstances",
 		"DescribeDBMajorEngineVersions": "DBMajorEngineVersions",
@@ -238,9 +237,6 @@ func (p *completenessProxy) operation(host, op string, call int) (int, string, s
 		return 200, "application/x-amz-json-1.1", `{"Recommendations":[{"RecommendationDetails":[` + details[p.details] + `]}]}`
 	}
 	if host == "ec2.us-east-1.amazonaws.com" && op == "DescribeRegions" {
-		if p.regions == "fallback" && call == 1 {
-			return 400, "text/xml", `<Response><Errors><Error><Code>UnauthorizedOperation</Code><Message>fixture denied region discovery</Message></Error></Errors></Response>`
-		}
 		return 200, "text/xml", `<DescribeRegionsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><regionInfo><item><regionName>us-east-1</regionName></item></regionInfo></DescribeRegionsResponse>`
 	}
 	p.t.Errorf("unexpected operation %s %s", host, op)
@@ -264,20 +260,16 @@ func (p *completenessProxy) assertRequests(t *testing.T) {
 		p.assertSPRequests(t)
 		return
 	}
+	// Region discovery is one Cost Explorer call; each discovered region is
+	// then fetched once. Discovery finds a region only when a recommendation
+	// survived parsing.
 	ceCalls := 1
-	if p.regions == "fallback" {
-		ceCalls = 6
-		if p.details == "valid" || p.details == "mixed" {
-			ceCalls++
-		}
+	if p.regions == "default" && (p.details == "valid" || p.details == "mixed") {
+		ceCalls++
 	}
 	require.Equal(t, ceCalls, p.requests["AWSInsightsIndexService.GetReservationPurchaseRecommendation"], "operations=%v", p.requests)
-	// --include-extended-support skips the RDS exclusion queries, so only region discovery lists regions.
-	wantRegions := 1
-	if p.regions == "explicit" {
-		wantRegions = 0
-	}
-	require.Equal(t, wantRegions, p.requests["DescribeRegions"], "region calls")
+	// Regions come from the recommendations; DescribeRegions is never called.
+	require.Zero(t, p.requests["DescribeRegions"], "region calls")
 	t.Logf("actual root command, config loader, SDK and CSV; synthetic operations=%v", p.requests)
 }
 

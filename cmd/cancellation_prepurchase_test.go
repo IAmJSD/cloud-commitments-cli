@@ -71,15 +71,55 @@ func TestFetchExistingCoverage_CanceledContextIsTerminalEvenOnDryRun(t *testing.
 	assert.Nil(t, got)
 }
 
-func TestHandleRegionDiscoveryError_CanceledContextDoesNotFallBackToDiscovery(t *testing.T) {
+func TestDetermineRegionsForService_CanceledContextIsTerminal(t *testing.T) {
 	captureAppLog(t)
-	client := &MockRecommendationsClient{} // no expectations: any call fails the test
+	client := &MockRecommendationsClient{}
+	client.On("GetRecommendations", mock.Anything, mock.Anything).Return(nil, canceledCtx().Err())
 
-	regions, err := handleRegionDiscoveryError(canceledCtx(), client, common.ServiceRDS, errors.New("describe regions: context canceled"))
+	regions, err := determineRegionsForService(canceledCtx(), client, common.ServiceRDS, Config{TermYears: 1})
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Nil(t, regions)
-	client.AssertNotCalled(t, "GetRecommendationsForService", mock.Anything, mock.Anything)
+}
+
+func TestDetermineRegionsForService_DiscoversRegionsTheCallerHasNotOptedInto(t *testing.T) {
+	captureAppLog(t)
+	cfg := Config{TermYears: 1, PaymentOption: "no-upfront", Coverage: 100}
+	rec := func(region string) common.Recommendation {
+		return common.Recommendation{Service: common.ServiceEC2, Region: region, ResourceType: "m5.large", Count: 1}
+	}
+	client := &MockRecommendationsClient{}
+	// aws.Config{} has no credentials, so any ec2:DescribeRegions call would
+	// fail: the regions must come from the recommendations.
+	client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "" })).
+		Return([]common.Recommendation{rec("us-east-1"), rec("eu-central-2"), rec("eu-central-2")}, nil).Once()
+
+	regions, err := determineRegionsForService(context.Background(), client, common.ServiceEC2, cfg)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"eu-central-2", "us-east-1"}, regions)
+}
+
+func TestFetchAllRecs_DefaultRunKeepsRecommendationsInRegionsOutsideTheCallersOptIns(t *testing.T) {
+	captureAppLog(t)
+	cfg := Config{TermYears: 1, PaymentOption: "no-upfront", Coverage: 100}
+	rec := func(region string) common.Recommendation {
+		return common.Recommendation{Service: common.ServiceRDS, Region: region, ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10}
+	}
+	client := &MockRecommendationsClient{}
+	// Cost Explorer answers the same account-wide list for every call; the
+	// per-region pass keeps the rows of its own region.
+	client.On("GetRecommendations", mock.Anything, mock.Anything).
+		Return([]common.Recommendation{rec("us-east-1"), rec("eu-central-2")}, nil)
+
+	recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+
+	require.NoError(t, err)
+	regions := make([]string, 0, len(recs))
+	for i := range recs {
+		regions = append(regions, recs[i].Region)
+	}
+	assert.ElementsMatch(t, []string{"us-east-1", "eu-central-2"}, regions)
 }
 
 func TestFetchRecommendationsForRegion_InterruptIsNotReportedAsProviderFailure(t *testing.T) {

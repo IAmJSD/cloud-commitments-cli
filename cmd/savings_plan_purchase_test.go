@@ -24,14 +24,14 @@ func TestDetermineRegionsForService_SavingsPlanCollectedOnceWithConfiguredRegion
 		common.ServiceSavingsPlansCompute, common.ServiceSavingsPlansEC2Instance,
 		common.ServiceSavingsPlansSageMaker, common.ServiceSavingsPlansDatabase,
 	} {
-		regions, err := determineRegionsForService(context.Background(), aws.Config{}, nil, svc, []string{"eu-west-1", "us-west-2", "ap-south-1"})
+		regions, err := determineRegionsForService(context.Background(), nil, svc, Config{Regions: []string{"eu-west-1", "us-west-2", "ap-south-1"}})
 		require.NoError(t, err)
 		assert.Equal(t, []string{spAPIRegion}, regions, svc)
 	}
 }
 
 func TestDetermineRegionsForService_ConfiguredRegionsKeptForRegionalServices(t *testing.T) {
-	regions, err := determineRegionsForService(context.Background(), aws.Config{}, nil, common.ServiceRDS, []string{"eu-west-1", "us-west-2"})
+	regions, err := determineRegionsForService(context.Background(), nil, common.ServiceRDS, Config{Regions: []string{"eu-west-1", "us-west-2"}})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"eu-west-1", "us-west-2"}, regions)
 }

@@ -109,19 +109,14 @@ func getAllAWSRegionsWithClient(ctx context.Context, ec2Client EC2ClientInterfac
 	return regions, nil
 }
 
-// discoverRegionsForService discovers regions that have recommendations for a specific service.
-func discoverRegionsForService(ctx context.Context, client provider.RecommendationsClient, service common.ServiceType) ([]string, error) {
-	recs, err := client.GetRecommendationsForService(ctx, service)
-	var incomplete *recommendations.IncompleteRecommendationsError
-	if errors.As(err, &incomplete) {
-		AppLogger.Printf("  ⚠️  Region discovery incomplete: %v\n", incomplete)
-	} else if partial := azureprovider.AsPartialSubscriptionFailure(err); partial != nil {
-		// Region discovery is best-effort: the subscriptions that answered
-		// still tell us where to look. Report the gap rather than dropping
-		// the discovered regions or failing outright.
-		AppLogger.Printf("  ⚠️  Region discovery incomplete: %d of %d Azure subscriptions succeeded\n",
-			partial.Succeeded, partial.Attempted)
-	} else if err != nil {
+// discoverRegionsForService returns the regions Cost Explorer has
+// recommendations in for the run's term, payment option and lookback. The
+// regions come from the recommendations themselves, not from ec2:DescribeRegions:
+// Cost Explorer returns linked-account recommendations in regions the caller
+// has not opted into, and iterating only the caller's regions dropped them.
+func discoverRegionsForService(ctx context.Context, client provider.RecommendationsClient, service common.ServiceType, cfg Config) ([]string, error) {
+	recs, err := fetchRecommendationsForRegion(ctx, client, service, "", cfg)
+	if err != nil {
 		return nil, err
 	}
 
@@ -316,7 +311,7 @@ func executePurchase(ctx context.Context, rec common.Recommendation, region stri
 }
 
 // determineRegionsForService determines which regions to process for a given service.
-func determineRegionsForService(ctx context.Context, awsCfg aws.Config, recClient provider.RecommendationsClient, service common.ServiceType, configuredRegions []string) ([]string, error) {
+func determineRegionsForService(ctx context.Context, recClient provider.RecommendationsClient, service common.ServiceType, cfg Config) ([]string, error) {
 	// Savings Plans are account-level, not regional - only query once, even
 	// when --regions lists several. The recommendation call returns the same
 	// account-wide set for every region, so honoring --regions here repeats
@@ -330,35 +325,18 @@ func determineRegionsForService(ctx context.Context, awsCfg aws.Config, recClien
 	}
 
 	// If regions are explicitly configured, use those
-	if len(configuredRegions) > 0 {
-		return configuredRegions, nil
+	if len(cfg.Regions) > 0 {
+		return cfg.Regions, nil
 	}
 
-	// Default to all AWS regions for other services
-	AppLogger.Printf("🌍 Processing all AWS regions for %s...\n", getServiceDisplayName(service))
-	allRegions, err := getAllAWSRegions(ctx, awsCfg)
+	AppLogger.Printf("🌍 Discovering regions with %s recommendations...\n", getServiceDisplayName(service))
+	regions, err := discoverRegionsForService(ctx, recClient, service, cfg)
 	if err != nil {
-		return handleRegionDiscoveryError(ctx, recClient, service, err)
+		return nil, err
 	}
 
-	AppLogger.Printf("📍 Processing %d region(s)\n", len(allRegions))
-	return allRegions, nil
-}
-
-// handleRegionDiscoveryError handles errors during region discovery by falling back to auto-discovery.
-func handleRegionDiscoveryError(ctx context.Context, recClient provider.RecommendationsClient, service common.ServiceType, originalErr error) ([]string, error) {
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, ctxErr
-	}
-	AppLogger.Printf("❌ Failed to get AWS regions: %v\n", originalErr)
-	AppLogger.Printf("🔍 Falling back to auto-discovery...\n")
-
-	discoveredRegions, err := discoverRegionsForService(ctx, recClient, service)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover regions: %w", err)
-	}
-
-	return discoveredRegions, nil
+	AppLogger.Printf("📍 Processing %d region(s)\n", len(regions))
+	return regions, nil
 }
 
 // engineVersionData holds the results of engine version queries.
@@ -940,7 +918,7 @@ func fetchAllRecs(
 		AppLogger.Printf("🔍 Fetching %s recommendations\n", getServiceDisplayName(service))
 		AppLogger.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
-		regions, err := determineRegionsForService(ctx, awsCfg, recClient, service, cfg.Regions)
+		regions, err := determineRegionsForService(ctx, recClient, service, cfg)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, drops, nil
