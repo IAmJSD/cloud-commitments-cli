@@ -1404,18 +1404,17 @@ func TestApplyTargetCoverage_DropTargetSizedToZero(t *testing.T) {
 		"drop summary should name the target-sized-to-zero category")
 }
 
-func TestResolveAccountName_LookupErrorIsReturnedAndNotCached(t *testing.T) {
+func TestResolveAccountName_LookupErrorIsReturnedAndRememberedForTheRun(t *testing.T) {
 	ctx := context.Background()
 	org := &MockOrganizationsClient{}
-	in := &organizations.DescribeAccountInput{AccountId: aws.String("999888777666")}
-	org.On("DescribeAccount", ctx, in).Return(nil, errors.New("throttled")).Once()
-	org.On("DescribeAccount", ctx, in).Return(&organizations.DescribeAccountOutput{Account: &types.Account{Name: aws.String("sandbox")}}, nil).Once()
+	org.On("DescribeAccount", ctx, &organizations.DescribeAccountInput{AccountId: aws.String("999888777666")}).
+		Return(nil, errors.New("AccessDenied")).Once() // a second call would fail the mock
+
 	cache := NewAccountAliasCacheWithClient(org)
 
-	_, err := cache.ResolveAccountName(ctx, "999888777666")
-	require.ErrorContains(t, err, "throttled")
-
-	name, err := cache.ResolveAccountName(ctx, "999888777666")
-	require.NoError(t, err)
-	assert.Equal(t, "sandbox", name, "the failure must not stick for the rest of the run")
+	for range 3 {
+		_, err := cache.ResolveAccountName(ctx, "999888777666")
+		require.ErrorContains(t, err, "AccessDenied")
+	}
+	org.AssertExpectations(t)
 }

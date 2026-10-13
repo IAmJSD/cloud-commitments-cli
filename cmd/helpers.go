@@ -42,6 +42,7 @@ type AccountAliasGetter interface {
 type AccountAliasCache struct {
 	orgClient OrganizationsAPI
 	cache     map[string]string
+	failed    map[string]error // lookups that failed this run, so a lasting failure costs one call per account
 	mu        sync.RWMutex
 }
 
@@ -49,6 +50,7 @@ type AccountAliasCache struct {
 func NewAccountAliasCache(cfg aws.Config) *AccountAliasCache {
 	return &AccountAliasCache{
 		cache:     make(map[string]string),
+		failed:    make(map[string]error),
 		orgClient: organizations.NewFromConfig(cfg),
 	}
 }
@@ -58,6 +60,7 @@ func NewAccountAliasCache(cfg aws.Config) *AccountAliasCache {
 func NewAccountAliasCacheWithClient(orgClient OrganizationsAPI) *AccountAliasCache {
 	return &AccountAliasCache{
 		cache:     make(map[string]string),
+		failed:    make(map[string]error),
 		orgClient: orgClient,
 	}
 }
@@ -74,8 +77,9 @@ func (c *AccountAliasCache) GetAccountAlias(ctx context.Context, accountID strin
 }
 
 // ResolveAccountName returns the Organizations name of an account. A failed
-// lookup is returned, not cached, so a transient error does not stick for the
-// rest of the run. An account with no name resolves to its ID.
+// lookup is returned, and remembered for the rest of the run so a lasting
+// failure (member accounts cannot call DescribeAccount) costs one call per
+// account. An account with no name resolves to its ID.
 func (c *AccountAliasCache) ResolveAccountName(ctx context.Context, accountID string) (string, error) {
 	if accountID == "" {
 		return "", nil
@@ -86,6 +90,10 @@ func (c *AccountAliasCache) ResolveAccountName(ctx context.Context, accountID st
 		c.mu.RUnlock()
 		return alias, nil
 	}
+	if err, ok := c.failed[accountID]; ok {
+		c.mu.RUnlock()
+		return "", err
+	}
 	c.mu.RUnlock()
 
 	c.mu.Lock()
@@ -95,12 +103,17 @@ func (c *AccountAliasCache) ResolveAccountName(ctx context.Context, accountID st
 	if alias, ok := c.cache[accountID]; ok {
 		return alias, nil
 	}
+	if err, ok := c.failed[accountID]; ok {
+		return "", err
+	}
 
 	result, err := c.orgClient.DescribeAccount(ctx, &organizations.DescribeAccountInput{
 		AccountId: aws.String(accountID),
 	})
 	if err != nil {
-		return "", fmt.Errorf("describing account %s: %w", accountID, err)
+		err = fmt.Errorf("describing account %s: %w", accountID, err)
+		c.failed[accountID] = err
+		return "", err
 	}
 
 	name := accountID

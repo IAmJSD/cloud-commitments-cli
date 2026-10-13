@@ -228,37 +228,93 @@ func TestFetchAllRecs_InterruptDuringLastRegionDiscardsItsData(t *testing.T) {
 // An --exclude-accounts name cannot be matched when the account's name lookup
 // fails. The old code replaced the name with the ID, so the excluded account's
 // recommendations passed the filter and could be purchased.
-func TestFetchAllRecs_AccountFilterWithUnresolvableNameFailsTheRun(t *testing.T) {
+func TestFetchAllRecs_AccountFilters(t *testing.T) {
 	captureAppLog(t)
-	rec := common.Recommendation{Service: common.ServiceRDS, Region: "us-east-1", Account: "222222222222", ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10}
-	newClient := func() *MockRecommendationsClient {
-		c := &MockRecommendationsClient{}
-		c.On("GetRecommendations", mock.Anything, mock.Anything).Return([]common.Recommendation{rec}, nil)
-		return c
+	rec := func(account string) common.Recommendation {
+		return common.Recommendation{Service: common.ServiceRDS, Region: "us-east-1", Account: account, ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10}
 	}
-	org := &MockOrganizationsClient{}
-	org.On("DescribeAccount", mock.Anything, mock.Anything).Return(nil, errors.New("throttled"))
-	cache := NewAccountAliasCacheWithClient(org)
 	base := Config{Regions: []string{"us-east-1"}, Coverage: 100, TermYears: 1, PaymentOption: "partial-upfront"}
-	run := func(cfg Config) ([]common.Recommendation, error) {
-		recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, newClient(), cache, []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
-		return recs, err
+	// Member accounts cannot call DescribeAccount: every lookup is denied.
+	run := func(t *testing.T, cfg Config, accounts ...string) (accountsOut []string, orgCalls int, err error) {
+		t.Helper()
+		var found []common.Recommendation
+		for _, a := range accounts {
+			found = append(found, rec(a))
+		}
+		client := &MockRecommendationsClient{}
+		client.On("GetRecommendations", mock.Anything, mock.Anything).Return(found, nil)
+		org := &MockOrganizationsClient{}
+		org.On("DescribeAccount", mock.Anything, mock.Anything).Return(nil, errors.New("AccessDenied"))
+		recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCacheWithClient(org), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+		for i := range recs {
+			accountsOut = append(accountsOut, recs[i].Account)
+		}
+		return accountsOut, len(org.Calls), err
 	}
 
-	for name, mutate := range map[string]func(*Config){
-		"exclude": func(c *Config) { c.ExcludeAccounts = []string{"sandbox"} },
-		"include": func(c *Config) { c.IncludeAccounts = []string{"production"} },
-	} {
+	t.Run("name-based exclude with a failed lookup fails the run", func(t *testing.T) {
 		cfg := base
-		mutate(&cfg)
-		recs, err := run(cfg)
-		require.Error(t, err, name)
-		assert.Contains(t, err.Error(), "throttled", name)
-		assert.Empty(t, recs, name)
-	}
+		cfg.ExcludeAccounts = []string{"sandbox"}
+		got, _, err := run(t, cfg, "222222222222")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "222222222222")
+		assert.Empty(t, got)
+	})
+	t.Run("name-based include with a failed lookup fails the run", func(t *testing.T) {
+		cfg := base
+		cfg.IncludeAccounts = []string{"production"}
+		_, _, err := run(t, cfg, "222222222222")
+		require.Error(t, err)
+	})
+	t.Run("ID-based exclude works without names", func(t *testing.T) {
+		cfg := base
+		cfg.ExcludeAccounts = []string{"222222222222"}
+		got, _, err := run(t, cfg, "222222222222", "333333333333")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"333333333333"}, got)
+	})
+	t.Run("ID-based include works without names", func(t *testing.T) {
+		cfg := base
+		cfg.IncludeAccounts = []string{"333333333333"}
+		got, _, err := run(t, cfg, "222222222222", "333333333333")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"333333333333"}, got)
+	})
+	t.Run("no filter keeps the ID as the name", func(t *testing.T) {
+		got, _, err := run(t, base, "222222222222")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"222222222222"}, got)
+	})
+	t.Run("a lasting lookup failure costs one call per account", func(t *testing.T) {
+		cfg := base
+		cfg.ExcludeAccounts = []string{"222222222222"}
+		accounts := make([]string, 20)
+		for i := range accounts {
+			accounts[i] = "333333333333"
+		}
+		_, calls, err := run(t, cfg, accounts...)
+		require.NoError(t, err)
+		assert.Equal(t, 1, calls)
+	})
+}
 
-	recs, err := run(base)
-	require.NoError(t, err, "without an account filter the ID stands in for the name")
-	require.Len(t, recs, 1)
-	assert.Equal(t, "222222222222", recs[0].AccountName)
+func TestRequireResolvedAccountNames_CSVRows(t *testing.T) {
+	rows := []common.Recommendation{{Account: "222222222222", AccountName: "222222222222"}}
+	// The CSV wrote the ID where the name lookup had failed.
+	require.Error(t, requireResolvedAccountNames(rows, &Config{ExcludeAccounts: []string{"sandbox"}}))
+	require.NoError(t, requireResolvedAccountNames(rows, &Config{ExcludeAccounts: []string{"222222222222"}}))
+	require.NoError(t, requireResolvedAccountNames(rows, &Config{}))
+	named := []common.Recommendation{{Account: "222222222222", AccountName: "sandbox"}}
+	require.NoError(t, requireResolvedAccountNames(named, &Config{ExcludeAccounts: []string{"sandbox"}}))
+	assert.False(t, shouldIncludeAccountIDOrName("222222222222", "sandbox", &Config{ExcludeAccounts: []string{"222222222222"}}), "an ID filter matches a named account")
+}
+
+func TestFilterAndAdjustRecommendations_NameExcludeOnCSVRowsWithoutNamesFails(t *testing.T) {
+	captureAppLog(t)
+	rows := []common.Recommendation{{Service: common.ServiceRDS, Region: "us-east-1", Account: "222222222222", AccountName: "222222222222", ResourceType: "db.t3.small", Count: 2}}
+
+	recs, err := filterAndAdjustRecommendations(context.Background(), rows, 100, Config{ExcludeAccounts: []string{"sandbox"}, IncludeExtendedSupport: true})
+
+	require.Error(t, err, "replay must not let an excluded account through because its name is missing")
+	assert.Empty(t, recs)
 }
