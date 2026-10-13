@@ -171,19 +171,24 @@ func parseCSVRecord(record []string, colIdx map[string]int) (common.Recommendati
 	rec.Account = getCSVField(record, colIdx, "Account")
 	rec.AccountName = getCSVField(record, colIdx, "AccountName")
 
-	var err error
-	if rec.Term, err = parseCSVEnum(record, colIdx, "Term", validCSVTerms); err != nil {
+	term, err := parseCSVEnum(record, colIdx, "Term", validCSVTerms)
+	if err != nil {
 		return rec, err
 	}
-	if rec.PaymentOption, err = parseCSVEnum(record, colIdx, "PaymentOption", validCSVPaymentOptions); err != nil {
+	rec.Term = term
+	payment, err := parseCSVEnum(record, colIdx, "PaymentOption", validCSVPaymentOptions)
+	if err != nil {
+		return rec, err
+	}
+	rec.PaymentOption = payment
+
+	err = parseCSVCount(record, colIdx, &rec.Count)
+	if err != nil {
 		return rec, err
 	}
 
-	if err = parseCSVCount(record, colIdx, &rec.Count); err != nil {
-		return rec, err
-	}
-
-	if err = parseCSVFloat(record, colIdx, "EstimatedSavings", &rec.EstimatedSavings); err != nil {
+	err = parseCSVFloat(record, colIdx, "EstimatedSavings", &rec.EstimatedSavings)
+	if err != nil {
 		return rec, err
 	}
 
