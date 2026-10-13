@@ -26,15 +26,16 @@ func TestLoadRecommendationsFromCSV_StrictCount(t *testing.T) {
 		{"trailing garbage", "3abc"},
 		{"trailing unit", "12 units"},
 		{"negative", "-1"},
+		{"zero", "0"},
 		{"blank", ""},
 		{"whitespace only", "  "},
 		{"overflows int64", "99999999999999999999"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			content := "Service,Region,ResourceType,Count\n" +
-				"rds,us-east-1,db.t3.micro,1\n" +
-				"rds,us-east-1,db.t3.small,\"" + tt.cell + "\"\n"
+			content := "Service,Region,ResourceType,Count,Term,PaymentOption\n" +
+				"rds,us-east-1,db.t3.micro,1,3yr,partial-upfront\n" +
+				"rds,us-east-1,db.t3.small,\"" + tt.cell + "\",3yr,partial-upfront\n"
 			err := loadCSVContent(t, content)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "line 3")
@@ -44,7 +45,7 @@ func TestLoadRecommendationsFromCSV_StrictCount(t *testing.T) {
 }
 
 func TestLoadRecommendationsFromCSV_CountTrimmed(t *testing.T) {
-	csvPath := writeTestRecommendationsCSV(t, "Service,Region,ResourceType,Count\nrds,us-east-1,db.t3.micro,\" 3 \"\n")
+	csvPath := writeTestRecommendationsCSV(t, "Service,Region,ResourceType,Count,Term,PaymentOption\nrds,us-east-1,db.t3.micro,\" 3 \",3yr,partial-upfront\n")
 	recs, err := loadRecommendationsFromCSV(csvPath)
 	require.NoError(t, err)
 	require.Len(t, recs, 1)
@@ -52,7 +53,7 @@ func TestLoadRecommendationsFromCSV_CountTrimmed(t *testing.T) {
 }
 
 func TestLoadRecommendationsFromCSV_CountColumnRequired(t *testing.T) {
-	err := loadCSVContent(t, "Service,Region,ResourceType\nrds,us-east-1,db.t3.micro\n")
+	err := loadCSVContent(t, "Service,Region,ResourceType,Term,PaymentOption\nrds,us-east-1,db.t3.micro,3yr,partial-upfront\n")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Count")
 }
@@ -62,6 +63,7 @@ func TestLoadRecommendationsFromCSV_StrictEstimatedSavings(t *testing.T) {
 		name string
 		cell string
 	}{
+		{"negative", "-100"},
 		{"trailing currency", "1000 USD"},
 		{"trailing garbage", "12.5abc"},
 		{"NaN", "NaN"},
@@ -70,8 +72,8 @@ func TestLoadRecommendationsFromCSV_StrictEstimatedSavings(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			content := "Service,Region,ResourceType,Count,EstimatedSavings\n" +
-				"rds,us-east-1,db.t3.micro,2,\"" + tt.cell + "\"\n"
+			content := "Service,Region,ResourceType,Count,EstimatedSavings,Term,PaymentOption\n" +
+				"rds,us-east-1,db.t3.micro,2,\"" + tt.cell + "\",3yr,partial-upfront\n"
 			err := loadCSVContent(t, content)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "line 2")
@@ -83,7 +85,7 @@ func TestLoadRecommendationsFromCSV_StrictEstimatedSavings(t *testing.T) {
 // A blank EstimatedSavings cell stays absent-as-zero: requireRankingSignal
 // relies on it to refuse a binding --max-instances cap.
 func TestLoadRecommendationsFromCSV_BlankSavingsStillZero(t *testing.T) {
-	csvPath := writeTestRecommendationsCSV(t, "Service,Region,ResourceType,Count,EstimatedSavings\nrds,us-east-1,db.t3.micro,2, \n")
+	csvPath := writeTestRecommendationsCSV(t, "Service,Region,ResourceType,Count,EstimatedSavings,Term,PaymentOption\nrds,us-east-1,db.t3.micro,2, ,3yr,partial-upfront\n")
 	recs, err := loadRecommendationsFromCSV(csvPath)
 	require.NoError(t, err)
 	require.Len(t, recs, 1)
@@ -107,8 +109,8 @@ func TestRunToolFromCSV_RejectsMalformedNumbers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Config{
-				CSVInput: writeTestRecommendationsCSV(t, "Service,Region,ResourceType,Count,EstimatedSavings\n"+
-					"rds,us-east-1,db.t3.micro,"+tt.count+","+tt.savings+"\n"),
+				CSVInput: writeTestRecommendationsCSV(t, "Service,Region,ResourceType,Count,EstimatedSavings,Term,PaymentOption\n"+
+					"rds,us-east-1,db.t3.micro,"+tt.count+","+tt.savings+",3yr,partial-upfront\n"),
 				CSVOutput:      filepath.Join(t.TempDir(), "report.csv"),
 				AuditLog:       filepath.Join(t.TempDir(), "audit.jsonl"),
 				ActualPurchase: false,
@@ -120,5 +122,53 @@ func TestRunToolFromCSV_RejectsMalformedNumbers(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.column)
 			assert.NoFileExists(t, cfg.CSVOutput)
 		})
+	}
+}
+
+// Term and PaymentOption cells must be exactly what the purchase path accepts
+// (1yr/3yr, all-upfront/partial-upfront/no-upfront); a blank or unknown value
+// fails the load with the row number instead of reaching the purchase loop.
+func TestLoadRecommendationsFromCSV_TermAndPaymentValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		term    string
+		payment string
+		column  string
+	}{
+		{"empty Term", "", "no-upfront", `column 5 "Term"`},
+		{"whitespace Term", " ", "no-upfront", `column 5 "Term"`},
+		{"unknown Term", "5yr", "no-upfront", `column 5 "Term"`},
+		{"numeric Term", "3", "no-upfront", `column 5 "Term"`},
+		{"uppercase Term", "3YR", "no-upfront", `column 5 "Term"`},
+		{"empty PaymentOption", "1yr", "", `column 6 "PaymentOption"`},
+		{"unknown PaymentOption", "1yr", "monthly", `column 6 "PaymentOption"`},
+		{"display-form PaymentOption", "1yr", "All Upfront", `column 6 "PaymentOption"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "Service,Region,ResourceType,Count,Term,PaymentOption\n" +
+				"rds,us-east-1,db.t3.micro,1,1yr,all-upfront\n" +
+				"rds,us-east-1,db.t3.small,2," + tt.term + "," + tt.payment + "\n"
+			err := loadCSVContent(t, content)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "line 3")
+			assert.Contains(t, err.Error(), tt.column)
+		})
+	}
+}
+
+func TestLoadRecommendationsFromCSV_TermAndPaymentAccepted(t *testing.T) {
+	for _, term := range []string{"1yr", "3yr"} {
+		for _, payment := range []string{"all-upfront", "partial-upfront", "no-upfront"} {
+			t.Run(term+"/"+payment, func(t *testing.T) {
+				recs, err := loadRecommendationsFromCSV(writeTestRecommendationsCSV(t,
+					"Service,Region,ResourceType,Count,Term,PaymentOption\n"+
+						"rds,us-east-1,db.t3.micro,2,"+term+","+payment+"\n"))
+				require.NoError(t, err)
+				require.Len(t, recs, 1)
+				assert.Equal(t, term, recs[0].Term)
+				assert.Equal(t, payment, recs[0].PaymentOption)
+			})
+		}
 	}
 }

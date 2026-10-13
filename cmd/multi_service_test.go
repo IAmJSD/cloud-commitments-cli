@@ -1700,8 +1700,8 @@ func TestRunToolFromCSV(t *testing.T) {
 	// silently ignored, so every row loaded with Count=0 and the whole run
 	// processed nothing while the NotPanics assertion stayed green.
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,All Upfront,111111111111
-elasticache,us-west-2,cache.t3.micro,redis,1,1yr,All Upfront,111111111111
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
+elasticache,us-west-2,cache.t3.micro,redis,1,1yr,all-upfront,111111111111
 `)
 
 	tests := []struct {
@@ -1768,7 +1768,7 @@ func TestRunToolFromCSV_DuplicateCheckFailureRefusesToPurchase(t *testing.T) {
 	isolateAWSEnv(t)
 
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,All Upfront,111111111111
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
 `)
 	reportPath := filepath.Join(t.TempDir(), "report.csv")
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -1836,9 +1836,9 @@ func TestRunToolFromCSV_WithMaxInstances(t *testing.T) {
 	// rather than capped by name; that case is covered by
 	// TestCSVCapRefusesRowsWithoutARankingSignal.
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,EstimatedSavings,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,10,100.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.medium,mysql,10,200.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.large,postgres,10,300.00,1yr,All Upfront,123456789012
+rds,us-east-1,db.t3.small,postgres,10,100.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.medium,mysql,10,200.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.large,postgres,10,300.00,1yr,all-upfront,123456789012
 `)
 
 	reportPath := filepath.Join(t.TempDir(), "report.csv")
@@ -1871,8 +1871,8 @@ func TestRunToolFromCSV_WithOverrideCount(t *testing.T) {
 	isolateAWSEnv(t)
 
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,10,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.medium,mysql,5,1yr,All Upfront,123456789012
+rds,us-east-1,db.t3.small,postgres,10,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.medium,mysql,5,1yr,all-upfront,123456789012
 `)
 
 	reportPath := filepath.Join(t.TempDir(), "report.csv")
@@ -1917,7 +1917,7 @@ func TestRunToolFromCSV_WritesAuditRecordsOnDryRun(t *testing.T) {
 	isolateAWSEnv(t)
 
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,All Upfront,111111111111
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
 `)
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 
@@ -2025,7 +2025,7 @@ func TestRunToolFromCSV_ChecksAuditLogWritability(t *testing.T) {
 	defer func() { toolCfg = origCfg }()
 
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,All Upfront,111111111111
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
 `)
 
 	toolCfg.CSVInput = csvPath
@@ -2060,8 +2060,8 @@ func TestRunToolFromCSV_ConfirmsOnceBeforeAnyRegion(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(oldWriter) })
 
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,All Upfront,111111111111
-rds,us-west-2,db.t3.medium,postgres,3,1yr,All Upfront,123456789012
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
+rds,us-west-2,db.t3.medium,postgres,3,1yr,all-upfront,123456789012
 `)
 	reportPath := filepath.Join(t.TempDir(), "report.csv")
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
