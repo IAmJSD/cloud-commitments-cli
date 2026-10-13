@@ -15,6 +15,7 @@ import (
 	orgtypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetAllAWSRegions(t *testing.T) {
@@ -160,10 +161,11 @@ func TestDiscoverRegionsForService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockClient := &MockRecommendationsClient{}
-			mockClient.On("GetRecommendationsForService", ctx, tt.service).Return(tt.mockReturns, nil)
+			mockClient.On("GetRecommendations", ctx, mock.MatchedBy(func(p *common.RecommendationParams) bool {
+				return p.Service == tt.service && p.Region == ""
+			})).Return(tt.mockReturns, nil)
 
-			// Now we can use the actual function directly since it accepts an interface
-			regions, err := discoverRegionsForService(ctx, mockClient, tt.service)
+			regions, err := discoverRegionsForService(ctx, mockClient, tt.service, Config{TermYears: 1})
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedRegions, regions)
@@ -340,7 +342,7 @@ func TestExecutePurchase(t *testing.T) {
 		Timestamp:      time.Now(),
 	}
 	var capturedOpts common.PurchaseOptions
-	mockClient.On("PurchaseCommitment", ctx, rec, mock.MatchedBy(func(o common.PurchaseOptions) bool {
+	mockClient.On("PurchaseCommitment", mock.Anything, rec, mock.MatchedBy(func(o common.PurchaseOptions) bool {
 		capturedOpts = o
 		return o.Source == common.PurchaseSourceCLI
 	})).Return(expectedResult, nil)
@@ -614,7 +616,8 @@ func TestDetermineServicesToProcess_AllServices(t *testing.T) {
 		AllServices: true,
 	}
 
-	result := determineServicesToProcess(cfg)
+	result, err := determineServicesToProcess(cfg)
+	assert.NoError(t, err)
 
 	// Should contain all supported services
 	assert.Contains(t, result, common.ServiceRDS)
@@ -631,7 +634,8 @@ func TestDetermineServicesToProcess_SpecificServices(t *testing.T) {
 		Services:    []string{"rds", "elasticache"},
 	}
 
-	result := determineServicesToProcess(cfg)
+	result, err := determineServicesToProcess(cfg)
+	assert.NoError(t, err)
 
 	assert.Equal(t, 2, len(result))
 	assert.Contains(t, result, common.ServiceRDS)
@@ -843,4 +847,51 @@ func TestPopulateAccountNamesLogic(t *testing.T) {
 		assert.Equal(t, "Staging", recs[2].AccountName)
 		mockOrg.AssertExpectations(t)
 	})
+}
+
+func TestDetermineServicesToProcess_DefaultAndInvalid(t *testing.T) {
+	for _, services := range [][]string{nil, {}} {
+		result, err := determineServicesToProcess(Config{Services: services})
+		assert.NoError(t, err)
+		assert.Equal(t, []common.ServiceType{common.ServiceRDS}, result)
+	}
+	result, err := determineServicesToProcess(Config{Services: []string{"rds", "elasticahe"}})
+	assert.ErrorContains(t, err, "elasticahe")
+	assert.Nil(t, result)
+}
+
+func TestDetermineServicesToProcess_SavingsPlanTypeFilters(t *testing.T) {
+	allSP := []common.ServiceType{
+		common.ServiceSavingsPlansCompute, common.ServiceSavingsPlansEC2Instance,
+		common.ServiceSavingsPlansSageMaker, common.ServiceSavingsPlansDatabase,
+	}
+	tests := []struct {
+		name    string
+		cfg     Config
+		want    []common.ServiceType
+		wantErr string
+	}{
+		{"no filter keeps all four", Config{Services: []string{"savingsplans"}}, allSP, ""},
+		{"include narrows, case-insensitive", Config{Services: []string{"savingsplans"}, IncludeSPTypes: []string{"EC2Instance"}},
+			[]common.ServiceType{common.ServiceSavingsPlansEC2Instance}, ""},
+		{"exclude drops", Config{Services: []string{"savingsplans"}, ExcludeSPTypes: []string{"sagemaker", "Database"}},
+			[]common.ServiceType{common.ServiceSavingsPlansCompute, common.ServiceSavingsPlansEC2Instance}, ""},
+		{"include then exclude", Config{Services: []string{"savingsplans"}, IncludeSPTypes: []string{"compute", "ec2instance"}, ExcludeSPTypes: []string{"compute"}},
+			[]common.ServiceType{common.ServiceSavingsPlansEC2Instance}, ""},
+		{"non-SP services untouched", Config{Services: []string{"rds", "savingsplans"}, IncludeSPTypes: []string{"compute"}},
+			[]common.ServiceType{common.ServiceRDS, common.ServiceSavingsPlansCompute}, ""},
+		{"unknown include fails loud", Config{Services: []string{"savingsplans"}, IncludeSPTypes: []string{"ec2"}}, nil, `unknown Savings Plan type "ec2"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := determineServicesToProcess(tc.cfg)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

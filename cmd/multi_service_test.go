@@ -207,6 +207,7 @@ func TestProcessService_EdgeCases(t *testing.T) {
 
 // TestProcessServiceWithMocks tests the processService function using mocks.
 func TestProcessServiceWithMocks(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	awsCfg := aws.Config{Region: "us-east-1"}
 
@@ -1258,6 +1259,7 @@ func TestWriteMultiServiceCSVReport_MultipleResults(t *testing.T) {
 // ==================== Additional ProcessPurchaseLoop Tests ====================
 
 func TestProcessPurchaseLoopPurchaseFailure(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	origCfg := toolCfg
 	defer func() { toolCfg = origCfg }()
@@ -1278,11 +1280,11 @@ func TestProcessPurchaseLoopPurchaseFailure(t *testing.T) {
 		Error:          fmt.Errorf("API error: quota exceeded"),
 		Timestamp:      time.Now(),
 	}
-	mockClient.On("PurchaseCommitment", ctx, recs[0], mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(failureResult, nil)
+	mockClient.On("PurchaseCommitment", mock.Anything, recs[0], mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(failureResult, nil)
 
 	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
 
-	results := processPurchaseLoop(ctx, recs, "ap-south-1", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "ap-south-1", false, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 1)
 	assert.False(t, results[0].Success)
@@ -1301,13 +1303,14 @@ func TestProcessPurchaseLoopEmptyRecommendations(t *testing.T) {
 
 	mockClient := &MockServiceClient{}
 
-	results := processPurchaseLoop(ctx, []common.Recommendation{}, "us-east-1", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, []common.Recommendation{}, "us-east-1", false, mockClient, toolCfg, "test-run")
 
 	assert.Empty(t, results)
 	mockClient.AssertNotCalled(t, "PurchaseCommitment", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestProcessServicePurchasesUserCancellation(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	origCfg := toolCfg
 	defer func() { toolCfg = origCfg }()
@@ -1326,11 +1329,11 @@ func TestProcessServicePurchasesUserCancellation(t *testing.T) {
 		CommitmentID:   "cache-purchase-123",
 		Timestamp:      time.Now(),
 	}
-	mockClient.On("PurchaseCommitment", ctx, recs[0], mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(result, nil)
+	mockClient.On("PurchaseCommitment", mock.Anything, recs[0], mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(result, nil)
 
 	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
 
-	results := processPurchaseLoop(ctx, recs, "us-west-1", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "us-west-1", false, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 1)
 	assert.True(t, results[0].Success)
@@ -1340,6 +1343,7 @@ func TestProcessServicePurchasesUserCancellation(t *testing.T) {
 }
 
 func TestProcessServicePurchasesDryRunMultiple(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	origCfg := toolCfg
 	defer func() { toolCfg = origCfg }()
@@ -1356,7 +1360,7 @@ func TestProcessServicePurchasesDryRunMultiple(t *testing.T) {
 	mockClient := &MockServiceClient{}
 	// Dry run should not call PurchaseCommitment
 
-	results := processPurchaseLoop(ctx, recs, "ap-northeast-1", true, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "ap-northeast-1", true, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 3)
 	for i, result := range results {
@@ -1398,7 +1402,7 @@ func TestExecutePurchaseWithEmptyPurchaseID(t *testing.T) {
 		Error:          nil,
 		Timestamp:      time.Now(),
 	}
-	mockClient.On("PurchaseCommitment", ctx, rec, mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(expectedResult, nil)
+	mockClient.On("PurchaseCommitment", mock.Anything, rec, mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(expectedResult, nil)
 
 	// Logger output disabled for testing
 
@@ -1412,6 +1416,7 @@ func TestExecutePurchaseWithEmptyPurchaseID(t *testing.T) {
 }
 
 func TestProcessPurchaseLoopDryRun(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	// Save original values
 	origCfg := toolCfg
@@ -1432,7 +1437,7 @@ func TestProcessPurchaseLoopDryRun(t *testing.T) {
 
 	// Logger output disabled for testing
 
-	results := processPurchaseLoop(ctx, recs, "us-east-1", true, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "us-east-1", true, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 2)
 	for _, result := range results {
@@ -1447,6 +1452,7 @@ func TestProcessPurchaseLoopDryRun(t *testing.T) {
 }
 
 func TestProcessPurchaseLoopActualPurchase(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	// Save original values
 	origCfg := toolCfg
@@ -1459,8 +1465,8 @@ func TestProcessPurchaseLoopActualPurchase(t *testing.T) {
 	toolCfg.Coverage = 80.0
 
 	recs := []common.Recommendation{
-		{Service: common.ServiceEC2, ResourceType: "t3.small", Count: 1, SourceRecommendation: "EC2 Test 1", EstimatedSavings: 100},
-		{Service: common.ServiceEC2, ResourceType: "t3.medium", Count: 2, SourceRecommendation: "EC2 Test 2", EstimatedSavings: 200},
+		{Service: common.ServiceEC2, ResourceType: "t3.small", Count: 1, SourceRecommendation: "EC2 Test 1", EstimatedSavings: 100, Details: &common.ComputeDetails{InstanceType: "t3.small", Platform: "Linux/UNIX", Tenancy: "default", Scope: "regional"}},
+		{Service: common.ServiceEC2, ResourceType: "t3.medium", Count: 2, SourceRecommendation: "EC2 Test 2", EstimatedSavings: 200, Details: &common.ComputeDetails{InstanceType: "t3.medium", Platform: "Linux/UNIX", Tenancy: "default", Scope: "regional"}},
 	}
 
 	mockClient := &MockServiceClient{}
@@ -1472,7 +1478,7 @@ func TestProcessPurchaseLoopActualPurchase(t *testing.T) {
 			Error:          nil,
 			Timestamp:      time.Now(),
 		}
-		mockClient.On("PurchaseCommitment", ctx, rec, mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(result, nil)
+		mockClient.On("PurchaseCommitment", mock.Anything, rec, mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(result, nil)
 	}
 
 	// Logger output disabled for testing
@@ -1480,7 +1486,7 @@ func TestProcessPurchaseLoopActualPurchase(t *testing.T) {
 	// Disable purchase delay for testing
 	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
 
-	results := processPurchaseLoop(ctx, recs, "eu-west-1", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "eu-west-1", false, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 2)
 	for i, result := range results {
@@ -1492,6 +1498,7 @@ func TestProcessPurchaseLoopActualPurchase(t *testing.T) {
 }
 
 func TestProcessPurchaseLoopWithConfirmation(t *testing.T) {
+	useCallerAccount(t)
 	ctx := context.Background()
 	// Save original values
 	origCfg := toolCfg
@@ -1518,14 +1525,14 @@ func TestProcessPurchaseLoopWithConfirmation(t *testing.T) {
 		Error:          nil,
 		Timestamp:      time.Now(),
 	}
-	mockClient.On("PurchaseCommitment", ctx, recs[0], mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(result, nil)
+	mockClient.On("PurchaseCommitment", mock.Anything, recs[0], mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(result, nil)
 
 	// Logger output disabled for testing
 
 	// Disable purchase delay for testing
 	t.Setenv("DISABLE_PURCHASE_DELAY", "true")
 
-	results := processPurchaseLoop(ctx, recs, "us-west-2", false, mockClient, toolCfg, "test-run")
+	results, _ := processPurchaseLoop(ctx, recs, "us-west-2", false, mockClient, toolCfg, "test-run")
 
 	assert.Len(t, results, 1)
 	assert.True(t, results[0].Success)
@@ -1604,7 +1611,7 @@ func TestFilterAndAdjustRecommendations(t *testing.T) {
 			// Suppress logger
 			// Logger output disabled for testing
 
-			result, err := filterAndAdjustRecommendations(tt.recommendations, tt.coverage, toolCfg)
+			result, err := filterAndAdjustRecommendations(context.Background(), tt.recommendations, tt.coverage, toolCfg)
 			require.NoError(t, err)
 
 			// Verify result is within expected range
@@ -1693,8 +1700,8 @@ func TestRunToolFromCSV(t *testing.T) {
 	// silently ignored, so every row loaded with Count=0 and the whole run
 	// processed nothing while the NotPanics assertion stayed green.
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,123456789012
-elasticache,us-west-2,cache.t3.micro,redis,1,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
+elasticache,us-west-2,cache.t3.micro,redis,1,1yr,all-upfront,111111111111
 `)
 
 	tests := []struct {
@@ -1761,7 +1768,7 @@ func TestRunToolFromCSV_DuplicateCheckFailureRefusesToPurchase(t *testing.T) {
 	isolateAWSEnv(t)
 
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
 `)
 	reportPath := filepath.Join(t.TempDir(), "report.csv")
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -1910,7 +1917,7 @@ func TestRunToolFromCSV_WritesAuditRecordsOnDryRun(t *testing.T) {
 	isolateAWSEnv(t)
 
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
 `)
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 
@@ -1952,6 +1959,7 @@ rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,123456789012
 // TestProcessPurchaseLoopActualPurchase already uses to test this loop's
 // purchase behavior without live AWS credentials.
 func TestProcessPurchaseLoop_WritesAuditRecordForRealPurchase(t *testing.T) {
+	useCallerAccount(t)
 	tests := []struct {
 		result     common.PurchaseResult
 		name       string
@@ -1984,7 +1992,7 @@ func TestProcessPurchaseLoop_WritesAuditRecordForRealPurchase(t *testing.T) {
 			result.Recommendation = recs[0]
 
 			mockClient := &MockServiceClient{}
-			mockClient.On("PurchaseCommitment", ctx, recs[0], mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(result, nil)
+			mockClient.On("PurchaseCommitment", mock.Anything, recs[0], mock.MatchedBy(func(o common.PurchaseOptions) bool { return o.Source == common.PurchaseSourceCLI })).Return(result, nil)
 
 			processPurchaseLoop(ctx, recs, "us-east-1", false /* isDryRun */, mockClient, toolCfg, "test-run-id")
 
@@ -2017,7 +2025,7 @@ func TestRunToolFromCSV_ChecksAuditLogWritability(t *testing.T) {
 	defer func() { toolCfg = origCfg }()
 
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
 `)
 
 	toolCfg.CSVInput = csvPath
@@ -2052,7 +2060,7 @@ func TestRunToolFromCSV_ConfirmsOnceBeforeAnyRegion(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(oldWriter) })
 
 	csvPath := writeTestRecommendationsCSV(t, `Service,Region,ResourceType,Engine,Count,Term,PaymentOption,Account
-rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.small,postgres,2,1yr,all-upfront,111111111111
 rds,us-west-2,db.t3.medium,postgres,3,1yr,all-upfront,123456789012
 `)
 	reportPath := filepath.Join(t.TempDir(), "report.csv")

@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/common"
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/provider"
+	awsprovider "github.com/LeanerCloud/cloud-commitments-go/providers/aws"
 	"github.com/LeanerCloud/cloud-commitments-go/providers/aws/recommendations"
 	azureprovider "github.com/LeanerCloud/cloud-commitments-go/providers/azure"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -106,19 +109,14 @@ func getAllAWSRegionsWithClient(ctx context.Context, ec2Client EC2ClientInterfac
 	return regions, nil
 }
 
-// discoverRegionsForService discovers regions that have recommendations for a specific service.
-func discoverRegionsForService(ctx context.Context, client provider.RecommendationsClient, service common.ServiceType) ([]string, error) {
-	recs, err := client.GetRecommendationsForService(ctx, service)
-	var incomplete *recommendations.IncompleteRecommendationsError
-	if errors.As(err, &incomplete) {
-		AppLogger.Printf("  ⚠️  Region discovery incomplete: %v\n", incomplete)
-	} else if partial := azureprovider.AsPartialSubscriptionFailure(err); partial != nil {
-		// Region discovery is best-effort: the subscriptions that answered
-		// still tell us where to look. Report the gap rather than dropping
-		// the discovered regions or failing outright.
-		AppLogger.Printf("  ⚠️  Region discovery incomplete: %d of %d Azure subscriptions succeeded\n",
-			partial.Succeeded, partial.Attempted)
-	} else if err != nil {
+// discoverRegionsForService returns the regions Cost Explorer has
+// recommendations in for the run's term, payment option and lookback. The
+// regions come from the recommendations themselves, not from ec2:DescribeRegions:
+// Cost Explorer returns linked-account recommendations in regions the caller
+// has not opted into, and iterating only the caller's regions dropped them.
+func discoverRegionsForService(ctx context.Context, client provider.RecommendationsClient, service common.ServiceType, cfg Config) ([]string, error) {
+	recs, err := fetchRecommendationsForRegion(ctx, client, service, "", cfg)
+	if err != nil {
 		return nil, err
 	}
 
@@ -145,15 +143,75 @@ func applyCommonCoverage(recs []common.Recommendation, coverage float64) []commo
 }
 
 // determineServicesToProcess returns the list of services to process based on flags.
-func determineServicesToProcess(cfg Config) []common.ServiceType {
-	if cfg.AllServices {
-		return getAllServices()
+func determineServicesToProcess(cfg Config) ([]common.ServiceType, error) {
+	var services []common.ServiceType
+	switch {
+	case cfg.AllServices:
+		services = getAllServices()
+	case len(cfg.Services) > 0:
+		parsed, err := parseServices(cfg.Services)
+		if err != nil {
+			return nil, err
+		}
+		services = parsed
+	default:
+		// Default to RDS only for backward compatibility
+		return []common.ServiceType{common.ServiceRDS}, nil
 	}
-	if len(cfg.Services) > 0 {
-		return parseServices(cfg.Services)
+	return filterSavingsPlanTypes(services, cfg.IncludeSPTypes, cfg.ExcludeSPTypes)
+}
+
+// spTypeServices maps the --include-sp-types / --exclude-sp-types names
+// (matched case-insensitively) to the per-plan-type service slugs.
+var spTypeServices = map[string]common.ServiceType{
+	"compute":     common.ServiceSavingsPlansCompute,
+	"ec2instance": common.ServiceSavingsPlansEC2Instance,
+	"sagemaker":   common.ServiceSavingsPlansSageMaker,
+	"database":    common.ServiceSavingsPlansDatabase,
+}
+
+// spTypeSet resolves --include-sp-types / --exclude-sp-types names to services.
+func spTypeSet(flag string, names []string) (map[common.ServiceType]bool, error) {
+	set := make(map[common.ServiceType]bool, len(names))
+	for _, name := range names {
+		service, ok := spTypeServices[strings.ToLower(strings.TrimSpace(name))]
+		if !ok {
+			return nil, fmt.Errorf("unknown Savings Plan type %q in %s; valid types: Compute, EC2Instance, SageMaker, Database", name, flag)
+		}
+		set[service] = true
 	}
-	// Default to RDS only for backward compatibility
-	return []common.ServiceType{common.ServiceRDS}
+	return set, nil
+}
+
+// filterSavingsPlanTypes drops the Savings Plan services that
+// --include-sp-types / --exclude-sp-types rule out, so only the requested
+// plan types are fetched. Each per-plan-type service queries exactly one plan
+// type and the provider ignores the include/exclude lists for it, so the
+// narrowing has to happen on the service list. Non-SP services pass through.
+func filterSavingsPlanTypes(services []common.ServiceType, include, exclude []string) ([]common.ServiceType, error) {
+	includeSet, err := spTypeSet("--include-sp-types", include)
+	if err != nil {
+		return nil, err
+	}
+	excludeSet, err := spTypeSet("--exclude-sp-types", exclude)
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]common.ServiceType, 0, len(services))
+	for _, service := range services {
+		if common.IsSavingsPlan(service) && !spTypeWanted(service, includeSet, excludeSet) {
+			continue
+		}
+		kept = append(kept, service)
+	}
+	return kept, nil
+}
+
+func spTypeWanted(service common.ServiceType, includeSet, excludeSet map[common.ServiceType]bool) bool {
+	if len(includeSet) > 0 && !includeSet[service] {
+		return false
+	}
+	return !excludeSet[service]
 }
 
 // printRunMode prints the current run mode (dry run or purchase).
@@ -253,96 +311,157 @@ func executePurchase(ctx context.Context, rec common.Recommendation, region stri
 }
 
 // determineRegionsForService determines which regions to process for a given service.
-func determineRegionsForService(ctx context.Context, awsCfg aws.Config, recClient provider.RecommendationsClient, service common.ServiceType, configuredRegions []string) ([]string, error) {
-	// If regions are explicitly configured, use those
-	if len(configuredRegions) > 0 {
-		return configuredRegions, nil
-	}
-
-	// Savings Plans are account-level, not regional - only query once
+func determineRegionsForService(ctx context.Context, recClient provider.RecommendationsClient, service common.ServiceType, cfg Config) ([]string, error) {
+	// Savings Plans are account-level, not regional - only query once, even
+	// when --regions lists several. The recommendation call returns the same
+	// account-wide set for every region, so honoring --regions here repeats
+	// each Savings Plan once per listed region and, now that Savings Plan
+	// purchases work, would buy it that many times. EC2Instance plans are
+	// still narrowed to the requested regions by the region filters on
+	// Details.Region.
 	if common.IsSavingsPlan(service) {
 		AppLogger.Printf("🌍 Fetching account-level Savings Plans recommendations...\n")
-		return []string{"us-east-1"}, nil // Single query for account-level data
+		return []string{spAPIRegion}, nil // Single query for account-level data
 	}
 
-	// Default to all AWS regions for other services
-	AppLogger.Printf("🌍 Processing all AWS regions for %s...\n", getServiceDisplayName(service))
-	allRegions, err := getAllAWSRegions(ctx, awsCfg)
+	// If regions are explicitly configured, use those
+	if len(cfg.Regions) > 0 {
+		return cfg.Regions, nil
+	}
+
+	AppLogger.Printf("🌍 Discovering regions with %s recommendations...\n", getServiceDisplayName(service))
+	regions, err := discoverRegionsForService(ctx, recClient, service, cfg)
 	if err != nil {
-		return handleRegionDiscoveryError(ctx, recClient, service, err)
+		return nil, err
 	}
 
-	AppLogger.Printf("📍 Processing %d region(s)\n", len(allRegions))
-	return allRegions, nil
-}
-
-// handleRegionDiscoveryError handles errors during region discovery by falling back to auto-discovery.
-func handleRegionDiscoveryError(ctx context.Context, recClient provider.RecommendationsClient, service common.ServiceType, originalErr error) ([]string, error) {
-	AppLogger.Printf("❌ Failed to get AWS regions: %v\n", originalErr)
-	AppLogger.Printf("🔍 Falling back to auto-discovery...\n")
-
-	discoveredRegions, err := discoverRegionsForService(ctx, recClient, service)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover regions: %w", err)
-	}
-
-	return discoveredRegions, nil
+	AppLogger.Printf("📍 Processing %d region(s)\n", len(regions))
+	return regions, nil
 }
 
 // engineVersionData holds the results of engine version queries.
+// failedRegions lists regions whose RDS inventory could not be read
+// completely, mapped to the cause; instanceVersions then holds only what was
+// read, so recommendations in those regions cannot be checked (issue #2147).
 type engineVersionData struct {
 	instanceVersions map[string][]InstanceEngineVersion
 	versionInfo      map[string]MajorEngineVersionInfo
+	failedRegions    map[string]error
 }
 
-// fetchEngineVersionData queries running instances and major engine versions for validation.
-func fetchEngineVersionData(ctx context.Context, cfg Config) engineVersionData {
+// engineVersionFetcher is the seam tests replace so they never reach AWS.
+var engineVersionFetcher = fetchEngineVersionData
+
+// extendedSupportCheckNeeded reports whether extended-support exclusion will
+// run for the given services: it is on by default and applies to RDS only.
+func extendedSupportCheckNeeded(cfg Config, services []common.ServiceType) bool {
+	if cfg.IncludeExtendedSupport {
+		return false
+	}
+	return slices.Contains(services, common.ServiceRDS)
+}
+
+// fetchEngineVersionData queries running instances and major engine versions
+// for extended-support exclusion. When needed is false nothing is queried.
+// It fails when exclusion data is unavailable as a whole (region listing or
+// any engine lifecycle query); per-region instance failures are returned in
+// failedRegions and enforced per recommendation by requireRegionInventory.
+func fetchEngineVersionData(ctx context.Context, cfg Config, needed bool) (engineVersionData, error) {
 	data := engineVersionData{
 		instanceVersions: make(map[string][]InstanceEngineVersion),
 		versionInfo:      make(map[string]MajorEngineVersionInfo),
+		failedRegions:    make(map[string]error),
+	}
+	if !needed {
+		return data, nil
 	}
 
-	// Query running instances for engine version validation
-	data.instanceVersions = queryInstanceVersions(ctx, cfg)
-
-	// Query major engine versions for extended support detection
-	data.versionInfo = queryMajorVersions(ctx, cfg)
-
-	return data
+	var err error
+	data.instanceVersions, data.failedRegions, err = queryInstanceVersions(ctx, cfg)
+	if err != nil {
+		return engineVersionData{}, fmt.Errorf("extended-support exclusion data unavailable: %w (re-run, or pass --include-extended-support to skip the check)", err)
+	}
+	data.versionInfo, err = queryMajorVersions(ctx, cfg)
+	if err != nil {
+		return engineVersionData{}, fmt.Errorf("extended-support exclusion data unavailable: %w (re-run, or pass --include-extended-support to skip the check)", err)
+	}
+	return data, nil
 }
 
 // queryInstanceVersions queries running instances for engine version validation.
-func queryInstanceVersions(ctx context.Context, cfg Config) map[string][]InstanceEngineVersion {
+func queryInstanceVersions(ctx context.Context, cfg Config) (instances map[string][]InstanceEngineVersion, failedRegions map[string]error, err error) {
 	AppLogger.Printf("🔍 Querying running RDS instances across all regions to validate engine versions...\n")
-	instanceVersions, err := queryRunningInstanceEngineVersions(ctx, cfg)
+	instanceVersions, failedRegions, err := queryRunningInstanceEngineVersions(ctx, cfg)
 	if err != nil {
-		AppLogger.Printf("⚠️  Warning: Failed to query running instances for engine version validation: %v\n", err)
-		AppLogger.Printf("   Continuing without engine version filtering\n")
-		return make(map[string][]InstanceEngineVersion)
+		return nil, nil, err
 	}
 
 	AppLogger.Printf("✅ Found %d instance types with version information across all regions\n", len(instanceVersions))
-	return instanceVersions
+	if len(failedRegions) > 0 {
+		AppLogger.Printf("⚠️  Warning: RDS inventory unavailable in %s; RDS recommendations in those regions will abort the run, other regions proceed\n", describeFailedRegions(failedRegions))
+	}
+	return instanceVersions, failedRegions, nil
 }
 
 // queryMajorVersions queries major engine versions for extended support detection.
-func queryMajorVersions(ctx context.Context, cfg Config) map[string]MajorEngineVersionInfo {
+func queryMajorVersions(ctx context.Context, cfg Config) (map[string]MajorEngineVersionInfo, error) {
 	AppLogger.Printf("🔍 Querying AWS RDS major engine versions for extended support information...\n")
 	versionInfo, err := queryMajorEngineVersions(ctx, cfg)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
 	if err != nil {
-		AppLogger.Printf("⚠️  Warning: Failed to query major engine versions: %v\n", err)
-		AppLogger.Printf("   Continuing without extended support detection\n")
-		return make(map[string]MajorEngineVersionInfo)
+		return nil, err
 	}
 
 	AppLogger.Printf("✅ Found support information for %d major engine versions\n", len(versionInfo))
-	return versionInfo
+	return versionInfo, nil
+}
+
+// describeFailedRegions renders failed regions and causes in a stable order.
+func describeFailedRegions(failed map[string]error) string {
+	names := make([]string, 0, len(failed))
+	for region := range failed {
+		names = append(names, region)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, region := range names {
+		parts = append(parts, fmt.Sprintf("%s (%v)", region, failed[region]))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// requireRegionInventory fails when an RDS recommendation sits in a region
+// (or has no region) whose instance inventory could not be read, because the
+// extended-support exclusion cannot be applied to it. Recommendations in
+// healthy regions are unaffected.
+func requireRegionInventory(recs []common.Recommendation, cfg Config, data engineVersionData) error {
+	if cfg.IncludeExtendedSupport || len(data.failedRegions) == 0 {
+		return nil
+	}
+	affected := make(map[string]error)
+	for i := range recs {
+		if d, ok := recs[i].Details.(*common.DatabaseDetails); !ok || d == nil {
+			continue
+		}
+		if recs[i].Region == "" {
+			maps.Copy(affected, data.failedRegions)
+		} else if cause, failed := data.failedRegions[recs[i].Region]; failed {
+			affected[recs[i].Region] = cause
+		}
+	}
+	if len(affected) == 0 {
+		return nil
+	}
+	return fmt.Errorf("extended-support exclusion cannot be applied: RDS inventory unavailable in %s (re-run, or pass --include-extended-support to skip the check)", describeFailedRegions(affected))
 }
 
 // regionRecommendations holds the processed recommendations for a single region.
 type regionRecommendations struct {
 	recommendations []common.Recommendation
 	results         []common.PurchaseResult
+	auditErr        error // errAuditTrailLost: stop buying
 }
 
 // processRegionRecommendations fetches and processes recommendations for a single region.
@@ -367,7 +486,13 @@ func processRegionRecommendations(
 	AppLogger.Printf("\n  📍 [%d/%d] Region: %s\n", regionIndex, totalRegions, region)
 
 	// Fetch recommendations
-	recs := fetchRecommendationsForRegion(ctx, recClient, service, region, cfg)
+	recs, fetchErr := fetchRecommendationsForRegion(ctx, recClient, service, region, cfg)
+	if fetchErr != nil {
+		// Legacy test-only path: the CLI run goes through fetchAndFilterRegionRecs,
+		// which returns this error to the caller.
+		AppLogger.Printf("  ❌ Failed to fetch recommendations: %v\n", fetchErr)
+		return result
+	}
 	if len(recs) == 0 {
 		AppLogger.Printf("  ℹ️  No recommendations found\n")
 		return result
@@ -389,6 +514,8 @@ func processRegionRecommendations(
 	// fetch expiring commitments — expiry-aware sizing only runs via the
 	// main pipeline in fetchAndFilterRegionRecs, which has access to the
 	// regional service client at the right moment. Drop tracking skipped (nil).
+	// nil commitments: no expiry deduction, so family sizing is identical to
+	// ApplyFamilyNUSizingRDS (documented on applyCoverageAndOverrides).
 	filteredRecs := applyCoverageAndOverrides(recs, cfg, coverageMap, nil, nil)
 
 	result.recommendations = filteredRecs
@@ -432,20 +559,28 @@ func processRegionRecommendations(
 	// it processes still ends up in cfg.AuditLog with a durable, groupable
 	// record; it is simply not grouped with a sibling region's run.
 	runID := uuid.New().String()
-	regionResults := processPurchaseLoop(ctx, adjustedRecs, region, isDryRun, serviceClient, cfg, runID)
+	regionResults, auditErr := processPurchaseLoop(ctx, adjustedRecs, region, isDryRun, serviceClient, cfg, runID)
 	result.results = regionResults
+	result.auditErr = auditErr
 
 	return result
 }
 
+// errRecommendationFetch marks a failure to obtain recommendations from the
+// provider, as opposed to a successful but empty answer.
+var errRecommendationFetch = errors.New("recommendation fetch failed")
+
 // fetchRecommendationsForRegion fetches recommendations from AWS for a specific region.
+// A provider failure is returned, not logged away: an empty slice with a nil
+// error means the provider answered and had nothing to recommend. An
+// incomplete-but-usable answer (partial sweep) is returned with a warning.
 func fetchRecommendationsForRegion(
 	ctx context.Context,
 	recClient provider.RecommendationsClient,
 	service common.ServiceType,
 	region string,
 	cfg Config,
-) []common.Recommendation {
+) ([]common.Recommendation, error) {
 	termStr := "1yr"
 	if cfg.TermYears == 3 {
 		termStr = "3yr"
@@ -457,20 +592,28 @@ func fetchRecommendationsForRegion(
 	}
 	params := common.RecommendationParams{
 		Service:        service,
-		Region:         region,
 		PaymentOption:  cfg.PaymentOption,
 		Term:           termStr,
 		LookbackPeriod: lookback,
 		// Savings Plans specific filters
 		IncludeSPTypes: cfg.IncludeSPTypes,
 		ExcludeSPTypes: cfg.ExcludeSPTypes,
+		SPAccountScope: cfg.SPAccountScope,
+	}
+	// For Savings Plans, region is only the endpoint the account-level call is
+	// signed in (spAPIRegion), not a filter. The provider folds params.Region
+	// into its include-region set, which would drop every EC2 Instance plan
+	// recommended outside that endpoint region.
+	if !common.IsSavingsPlan(service) {
+		params.Region = region
 	}
 
 	recs, err := recClient.GetRecommendations(ctx, &params)
+	stampSavingsPlanRegions(recs)
 	var incomplete *recommendations.IncompleteRecommendationsError
 	if errors.As(err, &incomplete) {
 		AppLogger.Printf("  ⚠️  %v\n", incomplete)
-		return recs
+		return recs, nil
 	}
 	if partial := azureprovider.AsPartialSubscriptionFailure(err); partial != nil {
 		// Keep the subscriptions that did answer, but say plainly that the
@@ -482,14 +625,29 @@ func fetchRecommendationsForRegion(
 		for _, f := range partial.Failed {
 			AppLogger.Printf("      subscription %s: %v\n", f.SubscriptionID, f.Err)
 		}
-		return recs
+		return recs, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		// Interrupted, not a provider failure: the caller stops on ctx.Err().
+		return nil, ctxErr
 	}
 	if err != nil {
-		AppLogger.Printf("  ❌ Failed to fetch recommendations: %v\n", err)
-		return nil
+		return nil, fmt.Errorf("%w: %s in %s: %w", errRecommendationFetch, getServiceDisplayName(service), region, err)
 	}
 
-	return recs
+	return recs, nil
+}
+
+// stampSavingsPlanRegions copies the region Cost Explorer reports for an EC2
+// Instance Savings Plan (kept in Details) into Recommendation.Region, which is
+// what the table, CSV and audit log print. Account-level plans have no region
+// and are left empty.
+func stampSavingsPlanRegions(recs []common.Recommendation) {
+	for i := range recs {
+		if recs[i].CommitmentType == common.CommitmentSavingsPlan {
+			recs[i].Region = awsprovider.EffectiveRegion(recs[i])
+		}
+	}
 }
 
 // populateRecommendationAccountNames populates account names from account IDs.
@@ -531,6 +689,13 @@ func applyRegionFilters(
 // ExistingCoveragePct further by the share of pool demand attributable to
 // RIs expiring within the window, so --target-coverage recommends
 // replacements before the cliff. Doesn't run if either input is empty.
+// RDS recs sized by the family-NU pass (target-coverage mode) ignore that
+// per-rec adjustment and instead get the same commitments and window through
+// ApplyFamilyNUSizingRDSWithExpiryOptions, which deducts expiring normalized units
+// from the family's coverage and credits replacement RIs bought inside the
+// coverage lookback (so a re-run does not buy them again); this deliberately
+// raises RDS counts and costs when RIs are about to expire (cli#2132). Callers passing nil commitments
+// get the plain ApplyFamilyNUSizingRDS behavior.
 //
 // drops accumulates per-reason drop counts for the end-of-run summary.
 // Pass nil to skip tracking.
@@ -555,7 +720,12 @@ func applyCoverageAndOverrides(recs []common.Recommendation, cfg Config, coverag
 	rest := recs
 	if cfg.TargetCoverage > 0 {
 		var familyDrops recommendations.FamilyDropCounts
-		sizedRDS, rest, familyDrops = recommendations.ApplyFamilyNUSizingRDS(recs, coverageMap, cfg.TargetCoverage)
+		var expiry recommendations.FamilyExpiryReport
+		lookbackDays := coverageLookbackDays(cfg)
+		sizedRDS, rest, familyDrops, expiry = recommendations.ApplyFamilyNUSizingRDSWithExpiryOptions(
+			recs, coverageMap, cfg.TargetCoverage, expiringCommitments,
+			recommendations.FamilyExpiryOptions{WindowDays: cfg.RebuyWindowDays, CoverageLookbackDays: lookbackDays})
+		logFamilyExpiry(expiry, cfg.RebuyWindowDays, lookbackDays)
 		drops.Add(common.DropFamilyAlreadyAtTarget, familyDrops.AlreadyAtTarget)
 		drops.Add(common.DropFamilyNoNUSignal, familyDrops.NoNUSignal)
 		drops.Add(common.DropFamilySizedToZero, familyDrops.SizedToZero)
@@ -575,6 +745,21 @@ func applyCoverageAndOverrides(recs []common.Recommendation, cfg Config, coverag
 	}
 
 	return filteredRecs
+}
+
+// logFamilyExpiry reports how rebuy-window expiry was folded into the RDS
+// family-NU sizing. Unusable RIs (unparsable instance class, or an engine
+// spelled differently from the coverage report) were NOT deducted, so they are
+// warned about rather than read as "no expiry".
+func logFamilyExpiry(expiry recommendations.FamilyExpiryReport, windowDays, lookbackDays int) {
+	if expiry.ExpiringNU > 0 {
+		// The exact deduction is capped by the covered and active NU per family
+		// (go#342); report the inputs rather than claim a net figure.
+		AppLogger.Printf("  ⏰ RDS family sizing: %.0f normalized units of RIs expiring within %d days considered against family coverage; %.0f units of replacement RIs started in the last %d days credited back\n", expiry.ExpiringNU, windowDays, expiry.ReplacementNU, lookbackDays)
+	}
+	if expiry.Unusable > 0 {
+		AppLogger.Printf("  ⚠️  %d RDS reserved instances expiring within %d days could not be applied to family sizing (unparsable instance class or no matching coverage family); their expiry was NOT deducted\n", expiry.Unusable, windowDays)
+	}
 }
 
 // checkDuplicates adjusts recommendations against already-owned RIs so the run
@@ -613,6 +798,11 @@ func checkDuplicates(
 	duplicateChecker := NewDuplicateChecker(toolCfg.IdempotencyWindowHours)
 	adjustedRecs, dedupedOut, err := duplicateChecker.AdjustRecommendationsForExistingRIs(ctx, filteredRecs, serviceClient)
 	if err != nil {
+		if ctx.Err() != nil {
+			// Interrupted: terminal in dry and real runs alike, never
+			// "continue with un-deduplicated counts". The caller stops on ctx.Err().
+			return nil
+		}
 		if !isDryRun {
 			AppLogger.Printf("  ❌ Refusing to purchase %d instance(s): could not check for existing RIs (%v). Dropping these recommendations rather than risking a duplicate purchase.\n", CalculateTotalInstances(filteredRecs), err)
 			drops.Add(dropDuplicateCheckFailed, len(filteredRecs))
@@ -651,21 +841,27 @@ func fetchAndFilterRegionRecs(
 	cfg Config,
 	coverageMap recommendations.PoolCoverageMap,
 	drops *common.DropSummary,
-) []common.Recommendation {
+) ([]common.Recommendation, error) {
 	AppLogger.Printf("\n  📍 [%d/%d] Region: %s\n", regionIndex, totalRegions, region)
 
-	recs := fetchRecommendationsForRegion(ctx, recClient, service, region, cfg)
+	recs, err := fetchRecommendationsForRegion(ctx, recClient, service, region, cfg)
+	if err != nil {
+		return nil, err
+	}
 	if len(recs) == 0 {
 		AppLogger.Printf("  ℹ️  No recommendations found\n")
-		return nil
+		return nil, nil
 	}
 	AppLogger.Printf("  ✅ Found %d recommendations\n", len(recs))
 
 	populateRecommendationAccountNames(ctx, recs, accountCache)
+	if err := requireRegionInventory(recs, cfg, engineData); err != nil {
+		return nil, err
+	}
 	recs = applyRegionFilters(recs, engineData, region, cfg, drops)
 	if len(recs) == 0 {
 		AppLogger.Printf("  ℹ️  No recommendations after applying filters\n")
-		return nil
+		return nil, nil
 	}
 
 	// Build the regional service client once and reuse for both expiry-aware
@@ -697,7 +893,7 @@ func fetchAndFilterRegionRecs(
 		recs = checkDuplicates(ctx, recs, serviceClient, effectiveDryRun(cfg), drops)
 	}
 
-	return recs
+	return recs, nil
 }
 
 // fetchAllRecs collects recommendations from all services and regions without
@@ -714,7 +910,7 @@ func fetchAllRecs(
 	engineData engineVersionData,
 	cfg Config,
 	coverageMap recommendations.PoolCoverageMap,
-) ([]common.Recommendation, *common.DropSummary) {
+) ([]common.Recommendation, *common.DropSummary, error) {
 	all := make([]common.Recommendation, 0)
 	drops := common.NewDropSummary()
 	for _, service := range servicesToProcess {
@@ -722,15 +918,26 @@ func fetchAllRecs(
 		AppLogger.Printf("🔍 Fetching %s recommendations\n", getServiceDisplayName(service))
 		AppLogger.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
-		regions, err := determineRegionsForService(ctx, awsCfg, recClient, service, cfg.Regions)
+		regions, err := determineRegionsForService(ctx, recClient, service, cfg)
 		if err != nil {
-			log.Printf("❌ Failed to determine regions for %s: %v", getServiceDisplayName(service), err)
-			continue
+			if ctx.Err() != nil {
+				return nil, drops, nil
+			}
+			return nil, nil, fmt.Errorf("%w: determining regions for %s: %w", errRecommendationFetch, getServiceDisplayName(service), err)
 		}
 		for i, region := range regions {
-			recs := fetchAndFilterRegionRecs(ctx, awsCfg, recClient, accountCache, service, region, i+1, len(regions), engineData, cfg, coverageMap, drops)
+			if ctx.Err() != nil {
+				return nil, drops, nil // partial data from an interrupted fetch is not a result
+			}
+			recs, err := fetchAndFilterRegionRecs(ctx, awsCfg, recClient, accountCache, service, region, i+1, len(regions), engineData, cfg, coverageMap, drops)
+			if ctx.Err() != nil {
+				return nil, drops, nil // interrupted mid-fetch: not a result, not a failure
+			}
+			if err != nil {
+				return nil, nil, err
+			}
 			all = append(all, recs...)
 		}
 	}
-	return all, drops
+	return all, drops, nil
 }

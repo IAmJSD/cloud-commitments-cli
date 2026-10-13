@@ -27,16 +27,18 @@ import (
 )
 
 type completenessProxy struct {
-	t          *testing.T
-	mu         sync.Mutex
-	handlers   sync.WaitGroup
-	regions    string
-	details    string
-	service    string
-	requests   map[string]int
-	spRequests []completenessSPRequest
-	engines    []string
-	cert       tls.Certificate
+	t              *testing.T
+	mu             sync.Mutex
+	handlers       sync.WaitGroup
+	regions        string
+	details        string
+	service        string
+	requests       map[string]int
+	spRequests     []completenessSPRequest
+	engines        []string
+	cert           tls.Certificate
+	expiryCoverage []string
+	expiryAccounts []string
 }
 
 type completenessSPRequest struct {
@@ -60,6 +62,9 @@ func newCompletenessProxy(t *testing.T, dir, regions, details, service string) (
 		KeyUsage:    x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
+	if service == "ec2" || service == rdsExpiryService {
+		template.DNSNames = append(template.DNSNames, "organizations.us-east-1.amazonaws.com")
+	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	require.NoError(t, err)
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
@@ -79,6 +84,7 @@ func (p *completenessProxy) serveConnect(w http.ResponseWriter, r *http.Request)
 	p.handlers.Add(1)
 	defer p.handlers.Done()
 	allowed := r.Host == "ce.us-east-1.amazonaws.com:443" || r.Host == "ec2.us-east-1.amazonaws.com:443" || r.Host == "rds.us-east-1.amazonaws.com:443" || r.Host == "savingsplans.amazonaws.com:443"
+	allowed = allowed || ((p.service == "ec2" || p.service == rdsExpiryService) && r.Host == "organizations.us-east-1.amazonaws.com:443")
 	if r.Method != http.MethodConnect || !allowed {
 		p.t.Errorf("unexpected CONNECT %s %s", r.Method, r.Host)
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -133,6 +139,12 @@ func (p *completenessProxy) respond(req *http.Request) *http.Response {
 	if err != nil {
 		p.t.Error(err)
 	}
+	if p.service == "ec2" {
+		return p.respondReservationExpiry(req, body)
+	}
+	if p.service == rdsExpiryService {
+		return p.respondRDSExpiry(req, body)
+	}
 	op := req.Header.Get("X-Amz-Target")
 	if req.Host == "savingsplans.amazonaws.com" && op == "" {
 		op = strings.TrimPrefix(req.URL.Path, "/")
@@ -173,9 +185,8 @@ func (p *completenessProxy) respond(req *http.Request) *http.Response {
 	}
 	p.mu.Lock()
 	p.requests[op]++
-	call := p.requests[op]
 	p.mu.Unlock()
-	status, contentType, payload := p.operation(req.Host, op, call)
+	status, contentType, payload := p.operation(req.Host, op)
 	if p.service != "rds" && req.Host == "ce.us-east-1.amazonaws.com" && op == "AWSInsightsIndexService.GetSavingsPlansPurchaseRecommendation" {
 		status, contentType, payload = p.spRecommendation(body)
 	}
@@ -184,7 +195,7 @@ func (p *completenessProxy) respond(req *http.Request) *http.Response {
 		Body:   io.NopCloser(strings.NewReader(payload)), ContentLength: int64(len(payload))}
 }
 
-func (p *completenessProxy) operation(host, op string, call int) (int, string, string) {
+func (p *completenessProxy) operation(host, op string) (int, string, string) {
 	responses := map[string]string{
 		"DescribeDBInstances":           "DBInstances",
 		"DescribeDBMajorEngineVersions": "DBMajorEngineVersions",
@@ -226,9 +237,6 @@ func (p *completenessProxy) operation(host, op string, call int) (int, string, s
 		return 200, "application/x-amz-json-1.1", `{"Recommendations":[{"RecommendationDetails":[` + details[p.details] + `]}]}`
 	}
 	if host == "ec2.us-east-1.amazonaws.com" && op == "DescribeRegions" {
-		if p.regions == "fallback" && call == 2 {
-			return 400, "text/xml", `<Response><Errors><Error><Code>UnauthorizedOperation</Code><Message>fixture denied region discovery</Message></Error></Errors></Response>`
-		}
 		return 200, "text/xml", `<DescribeRegionsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><regionInfo><item><regionName>us-east-1</regionName></item></regionInfo></DescribeRegionsResponse>`
 	}
 	p.t.Errorf("unexpected operation %s %s", host, op)
@@ -240,23 +248,28 @@ func (p *completenessProxy) assertRequests(t *testing.T) {
 	p.handlers.Wait()
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.service == "ec2" {
+		p.assertReservationExpiryRequests(t)
+		return
+	}
+	if p.service == rdsExpiryService {
+		p.assertRDSExpiryRequests(t)
+		return
+	}
 	if p.service != "rds" {
 		p.assertSPRequests(t)
 		return
 	}
+	// Region discovery is one Cost Explorer call; each discovered region is
+	// then fetched once. Discovery finds a region only when a recommendation
+	// survived parsing.
 	ceCalls := 1
-	if p.regions == "fallback" {
-		ceCalls = 6
-		if p.details == "valid" || p.details == "mixed" {
-			ceCalls++
-		}
+	if p.regions == "default" && (p.details == "valid" || p.details == "mixed") {
+		ceCalls++
 	}
 	require.Equal(t, ceCalls, p.requests["AWSInsightsIndexService.GetReservationPurchaseRecommendation"], "operations=%v", p.requests)
-	wantRegions := 2
-	if p.regions == "explicit" {
-		wantRegions = 1
-	}
-	require.Equal(t, wantRegions, p.requests["DescribeRegions"], "region calls")
+	// Regions come from the recommendations; DescribeRegions is never called.
+	require.Zero(t, p.requests["DescribeRegions"], "region calls")
 	t.Logf("actual root command, config loader, SDK and CSV; synthetic operations=%v", p.requests)
 }
 
@@ -333,11 +346,11 @@ func (p *completenessProxy) assertSPRequests(t *testing.T) {
 			rows = 0
 		}
 	}
-	operations := map[string]int{"DescribeRegions": 1, "DescribeDBInstances": 1, "DescribeDBMajorEngineVersions": 4, "AWSInsightsIndexService.GetSavingsPlansPurchaseRecommendation": len(expected)}
+	operations := map[string]int{"AWSInsightsIndexService.GetSavingsPlansPurchaseRecommendation": len(expected)}
 	if rows > 0 {
 		operations["DescribeSavingsPlans"] = rows
 	}
 	require.Equal(t, operations, p.requests, "unexpected read or purchase")
-	require.Equal(t, []string{"mysql", "postgres", "aurora-mysql", "aurora-postgresql"}, p.engines, "ancillary RDS engine reads")
+	require.Empty(t, p.engines, "--include-extended-support must skip the RDS lifecycle reads")
 	t.Logf("actual root command, SP SDK and CSV; synthetic operations=%v", p.requests)
 }

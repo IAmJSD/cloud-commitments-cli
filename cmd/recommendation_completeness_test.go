@@ -28,7 +28,7 @@ func TestRecommendationCompletenessCommand(t *testing.T) {
 		runCompletenessCommandChild(t)
 		return
 	}
-	for _, regionMode := range []string{"explicit", "default", "fallback"} {
+	for _, regionMode := range []string{"explicit", "default"} {
 		for _, details := range []string{"valid", "mixed", "all-invalid", "empty", "api-error"} {
 			t.Run(regionMode+"/"+details, func(t *testing.T) {
 				runCompletenessScenario(t, "rds", regionMode, details)
@@ -58,6 +58,7 @@ func runCompletenessScenario(t *testing.T, service, regionMode, details string) 
 		"CUDLY_COMPLETENESS_AUDIT=" + filepath.Join(dir, "audit.jsonl"),
 		"CUDLY_COMPLETENESS_REGIONS=" + regionMode,
 		"CUDLY_COMPLETENESS_SERVICE=" + service,
+		"CUDLY_COMPLETENESS_DETAILS=" + details,
 		"AWS_ACCESS_KEY_ID=synthetic", "AWS_SECRET_ACCESS_KEY=synthetic", "AWS_REGION=us-east-1",
 		"AWS_EC2_METADATA_DISABLED=true", "AWS_MAX_ATTEMPTS=1",
 		"AWS_CONFIG_FILE=" + filepath.Join(dir, "absent-config"),
@@ -66,16 +67,32 @@ func runCompletenessScenario(t *testing.T, service, regionMode, details string) 
 	}
 	var stdout, stderr bytes.Buffer
 	child.Stdout, child.Stderr = &stdout, &stderr
-	require.NoError(t, child.Run(), "stdout: %s\nstderr: %s", &stdout, &stderr)
-	fixture.assertRequests(t)
+	runErr := child.Run()
 	logs := stdout.String() + stderr.String()
+	if details == "api-error" || details == "failed-type" {
+		// A provider failure is a failed run, not "nothing to buy".
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, runErr, &exitErr, logs)
+		require.Equal(t, 1, exitErr.ExitCode(), logs)
+		require.Contains(t, logs, "Cannot complete the recommendation fetch")
+		require.Contains(t, logs, "fixture denied recommendations")
+		require.NoFileExists(t, output)
+		return
+	}
+	require.NoError(t, runErr, "stdout: %s\nstderr: %s", &stdout, &stderr)
+	fixture.assertRequests(t)
 	for _, failure := range []string{"Could not check", "Failed to query", "request send failed", "certificate", "TLS handshake"} {
 		require.NotContains(t, logs, failure, "unexpected ancillary error")
 	}
-	if service == "rds" {
-		assertCompletenessDiagnostics(t, regionMode, details, stdout.String(), stderr.String())
+	switch service {
+	case "ec2":
+		assertReservationExpiryCSV(t, output, details, logs)
+	case rdsExpiryService:
+		assertRDSExpiryCSV(t, output, details, logs)
+	case "rds":
+		assertCompletenessDiagnostics(t, details, stdout.String(), stderr.String())
 		assertCompletenessCSV(t, output, details, logs)
-	} else {
+	default:
 		assertSPCompleteness(t, output, service, details, logs)
 	}
 }
@@ -90,10 +107,20 @@ func runCompletenessCommandChild(t *testing.T) {
 	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
 	http.DefaultTransport = transport
 	t.Cleanup(transport.CloseIdleConnections)
-	args := []string{"--services", os.Getenv("CUDLY_COMPLETENESS_SERVICE"), "--term", "1", "--include-extended-support", "--coverage", "100",
+	services := os.Getenv("CUDLY_COMPLETENESS_SERVICE")
+	if services == rdsExpiryService {
+		services = "rds"
+	}
+	args := []string{"--services", services, "--term", "1", "--include-extended-support", "--coverage", "100",
 		"--output", os.Getenv("CUDLY_COMPLETENESS_OUTPUT"), "--audit-log", os.Getenv("CUDLY_COMPLETENESS_AUDIT")}
 	if os.Getenv("CUDLY_COMPLETENESS_REGIONS") == "explicit" {
 		args = append(args, "--regions", "us-east-1")
+	}
+	if os.Getenv("CUDLY_COMPLETENESS_SERVICE") == "ec2" {
+		args = append(args, reservationExpiryArgs(os.Getenv("CUDLY_COMPLETENESS_DETAILS"))...)
+	}
+	if os.Getenv("CUDLY_COMPLETENESS_SERVICE") == rdsExpiryService {
+		args = append(args, rdsExpiryArgs(os.Getenv("CUDLY_COMPLETENESS_DETAILS"))...)
 	}
 	rootCmd.SetArgs(args)
 	require.NoError(t, rootCmd.Execute())
@@ -109,14 +136,8 @@ func assertSPCompleteness(t *testing.T, output, service, details, logs string) {
 		warnings, failedDetails = len(types), 1
 	case "late-page":
 		warnings, failedScopes = len(types), 1
-	case "failed-type":
-		if service == "savingsplans" {
-			survivors = types[:3]
-		} else {
-			survivors = nil
-		}
 	}
-	if details == "empty" || details == "all-invalid" || details == "api-error" {
+	if details == "empty" || details == "all-invalid" {
 		survivors = nil
 	}
 	require.Equal(t, warnings, strings.Count(logs, "incomplete AWS recommendations:"), logs)
@@ -127,15 +148,8 @@ func assertSPCompleteness(t *testing.T, output, service, details, logs string) {
 			require.Contains(t, logs, "not-a-number")
 		}
 	}
-	failures := 0
-	switch details {
-	case "api-error":
-		failures = len(types)
-	case "failed-type":
-		failures = 1
-	}
-	require.Equal(t, failures, strings.Count(logs, "Failed to fetch recommendations:"), logs)
-	if failures > 0 || details == "late-page" {
+	require.NotContains(t, logs, "Failed to fetch recommendations:")
+	if details == "late-page" {
 		require.Contains(t, logs, "fixture denied recommendations")
 	}
 	require.NotContains(t, logs, "Region discovery incomplete")
@@ -158,37 +172,30 @@ func assertSPCompleteness(t *testing.T, output, service, details, logs string) {
 		for j, header := range rows[0] {
 			columns[header] = rows[i+1][j]
 		}
-		for field, want := range map[string]string{"Service": completenessSPService(plan), "Region": "", "ResourceType": "", "Count": "1", "Term": "1yr", "PaymentOption": "no-upfront", "UpfrontPayment": "3.00", "RecurringMonthlyCost": "1460.00", "EstimatedSavings": "10.00", "Success": "true", "Error": ""} {
+		wantRegion := ""
+		if plan == "EC2_INSTANCE_SP" {
+			wantRegion = "us-east-1"
+		}
+		for field, want := range map[string]string{"Service": completenessSPService(plan), "Region": wantRegion, "DetailsRegion": wantRegion, "ResourceType": "", "Count": "1", "Term": "1yr", "PaymentOption": "no-upfront", "UpfrontPayment": "3.00", "RecurringMonthlyCost": "1459.75", "EstimatedSavings": "10.00", "Success": "true", "Error": ""} {
 			require.Equal(t, want, columns[field], "CSV %s; row=%v", field, rows[i+1])
 		}
 	}
 	require.Contains(t, logs, "CSV report written")
 }
 
-func assertCompletenessDiagnostics(t *testing.T, regionMode, details, stdout, stderr string) {
+func assertCompletenessDiagnostics(t *testing.T, details, stdout, stderr string) {
 	t.Helper()
 	malformed := details == "mixed" || details == "all-invalid"
 	if malformed {
-		count := 1
-		if regionMode == "fallback" {
-			count = 6
-		}
-		want := fmt.Sprintf("incomplete AWS recommendations: %d failed details, 0 failed scopes:", count)
+		want := "incomplete AWS recommendations: 1 failed details, 0 failed scopes:"
 		for _, diagnostic := range []string{want, "not-a-number", "detail"} {
 			require.Contains(t, stdout, diagnostic, "stderr: %s", stderr)
-		}
-		if regionMode == "fallback" {
-			require.Contains(t, stdout, "Region discovery incomplete")
 		}
 	} else {
 		require.NotContains(t, stdout, "incomplete AWS recommendations")
 	}
-	if details == "api-error" {
-		require.Contains(t, stdout+stderr, "fixture denied recommendations")
-	} else {
-		require.NotContains(t, stdout+stderr, "Failed to fetch recommendations", "partial collection treated as fatal")
-		require.NotContains(t, stdout+stderr, "failed to discover regions", "partial collection treated as fatal")
-	}
+	require.NotContains(t, stdout+stderr, "Failed to fetch recommendations", "partial collection treated as fatal")
+	require.NotContains(t, stdout+stderr, "failed to discover regions", "partial collection treated as fatal")
 }
 
 func assertCompletenessCSV(t *testing.T, output, details, logs string) {
@@ -239,17 +246,18 @@ func TestRecommendationCompletenessHelpers(t *testing.T) {
 			t.Cleanup(func() { AppLogger.SetOutput(previous) })
 			ctx := context.Background()
 			client := &MockRecommendationsClient{}
-			client.On("GetRecommendationsForService", ctx, common.ServiceRDS).Return(tc.recs, tc.err)
 			client.On("GetRecommendations", ctx, mock.Anything).Return(tc.recs, tc.err)
-			regions, err := discoverRegionsForService(ctx, client, common.ServiceRDS)
-			got := fetchRecommendationsForRegion(ctx, client, common.ServiceRDS, "us-east-1", Config{TermYears: 1})
+			regions, err := discoverRegionsForService(ctx, client, common.ServiceRDS, Config{TermYears: 1})
+			got, fetchErr := fetchRecommendationsForRegion(ctx, client, common.ServiceRDS, "us-east-1", Config{TermYears: 1})
 			if !tc.keep {
 				require.ErrorIs(t, err, tc.err)
+				require.ErrorIs(t, fetchErr, tc.err)
 				require.Nil(t, regions)
 				require.Nil(t, got)
 				require.NotContains(t, output.String(), "incomplete AWS recommendations")
 			} else {
 				require.NoError(t, err)
+				require.NoError(t, fetchErr)
 				require.Equal(t, tc.recs, got)
 				require.Len(t, regions, len(tc.recs))
 				require.Equal(t, 2, strings.Count(output.String(), "2 failed details, 1 failed scopes"))

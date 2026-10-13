@@ -1,0 +1,226 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/LeanerCloud/cloud-commitments-go/pkg/common"
+	awsprovider "github.com/LeanerCloud/cloud-commitments-go/providers/aws"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+)
+
+func canceledCtx() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func expiredCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	t.Cleanup(cancel)
+	return ctx
+}
+
+func TestFetchEngineVersionData_CancellationAndDeadlineAreTerminal(t *testing.T) {
+	captureAppLog(t)
+	for name, ctx := range map[string]context.Context{"canceled": canceledCtx(), "deadline": expiredCtx(t)} {
+		_, err := fetchEngineVersionData(ctx, Config{}, true)
+		require.Error(t, err, name)
+		assert.ErrorIs(t, err, ctx.Err(), name)
+	}
+}
+
+func TestFilterAndAdjustRecommendations_CancellationAndDeadlineAreTerminal(t *testing.T) {
+	for name, ctx := range map[string]context.Context{"canceled": canceledCtx(), "deadline": expiredCtx(t)} {
+		recs := []common.Recommendation{{Service: common.ServiceRDS, Region: "us-east-1", ResourceType: "db.t3.small", Count: 2}}
+		got, err := filterAndAdjustRecommendations(ctx, recs, 100, Config{})
+		require.Error(t, err, name)
+		assert.ErrorIs(t, err, ctx.Err(), name)
+		assert.Empty(t, got, name)
+	}
+}
+
+func TestPrepareCSVPurchaseRun_CanceledContextStopsBeforeConfirmationAndPurchase(t *testing.T) {
+	dir := t.TempDir()
+	csvPath := filepath.Join(dir, "in.csv")
+	require.NoError(t, os.WriteFile(csvPath, []byte("Service,Region,ResourceType,Count,Engine\nrds,us-east-1,db.t3.small,2,mysql\n"), 0o600))
+	cfg := Config{CSVInput: csvPath, AuditLog: filepath.Join(dir, "audit.jsonl")}
+
+	for _, dry := range []bool{true, false} {
+		recs, _, _, err := prepareCSVPurchaseRun(canceledCtx(), cfg, 100, dry)
+		require.ErrorIs(t, err, context.Canceled, "dryRun=%v", dry)
+		assert.Empty(t, recs)
+	}
+}
+
+func TestFetchExistingCoverage_CanceledContextIsTerminalEvenOnDryRun(t *testing.T) {
+	realClient := awsprovider.NewRecommendationsClientDirect(aws.Config{Region: "us-east-1"})
+	cfg := Config{TargetCoverage: 80, Regions: []string{"us-east-1"}, ActualPurchase: false}
+
+	got, err := fetchExistingCoverage(canceledCtx(), aws.Config{Region: "us-east-1"}, realClient, cfg)
+
+	require.ErrorIs(t, err, context.Canceled, "a dry run used to swallow this and size against an empty map")
+	assert.Nil(t, got)
+}
+
+func TestDetermineRegionsForService_CanceledContextIsTerminal(t *testing.T) {
+	captureAppLog(t)
+	client := &MockRecommendationsClient{}
+	client.On("GetRecommendations", mock.Anything, mock.Anything).Return(nil, canceledCtx().Err())
+
+	regions, err := determineRegionsForService(canceledCtx(), client, common.ServiceRDS, Config{TermYears: 1})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, regions)
+}
+
+func TestDetermineRegionsForService_DiscoversRegionsTheCallerHasNotOptedInto(t *testing.T) {
+	captureAppLog(t)
+	cfg := Config{TermYears: 1, PaymentOption: "no-upfront", Coverage: 100}
+	rec := func(region string) common.Recommendation {
+		return common.Recommendation{Service: common.ServiceEC2, Region: region, ResourceType: "m5.large", Count: 1}
+	}
+	client := &MockRecommendationsClient{}
+	// aws.Config{} has no credentials, so any ec2:DescribeRegions call would
+	// fail: the regions must come from the recommendations.
+	client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "" })).
+		Return([]common.Recommendation{rec("us-east-1"), rec("eu-central-2"), rec("eu-central-2")}, nil).Once()
+
+	regions, err := determineRegionsForService(context.Background(), client, common.ServiceEC2, cfg)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"eu-central-2", "us-east-1"}, regions)
+}
+
+func TestFetchAllRecs_DefaultRunKeepsRecommendationsInRegionsOutsideTheCallersOptIns(t *testing.T) {
+	captureAppLog(t)
+	cfg := Config{TermYears: 1, PaymentOption: "no-upfront", Coverage: 100}
+	rec := func(region string) common.Recommendation {
+		return common.Recommendation{Service: common.ServiceRDS, Region: region, ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10}
+	}
+	client := &MockRecommendationsClient{}
+	// Cost Explorer answers the same account-wide list for every call; the
+	// per-region pass keeps the rows of its own region.
+	client.On("GetRecommendations", mock.Anything, mock.Anything).
+		Return([]common.Recommendation{rec("us-east-1"), rec("eu-central-2")}, nil)
+
+	recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+
+	require.NoError(t, err)
+	regions := make([]string, 0, len(recs))
+	for i := range recs {
+		regions = append(regions, recs[i].Region)
+	}
+	assert.ElementsMatch(t, []string{"us-east-1", "eu-central-2"}, regions)
+}
+
+func TestFetchRecommendationsForRegion_InterruptIsNotReportedAsProviderFailure(t *testing.T) {
+	out := captureAppLog(t)
+	ctx := canceledCtx()
+	client := &MockRecommendationsClient{}
+	client.On("GetRecommendations", mock.Anything, mock.Anything).Return(nil, ctx.Err())
+
+	got, err := fetchRecommendationsForRegion(ctx, client, common.ServiceRDS, "us-east-1", Config{TermYears: 1})
+
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, got)
+	assert.NotContains(t, out.String(), "Failed to fetch recommendations")
+}
+
+func TestFetchAllRecs_InterruptStopsFanOutAndDiscardsPartialData(t *testing.T) {
+	captureAppLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := Config{Regions: []string{"us-east-1", "us-west-2", "eu-west-1"}, Coverage: 100, TermYears: 1, PaymentOption: "partial-upfront"}
+	client := &MockRecommendationsClient{}
+	rec := common.Recommendation{Service: common.ServiceRDS, Region: "us-east-1", ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10}
+	client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "us-east-1" })).
+		Run(func(mock.Arguments) { cancel() }). // Ctrl-C after the first region answered
+		Return([]common.Recommendation{rec}, nil).Once()
+
+	recs, _, _ := fetchAllRecs(ctx, aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+
+	assert.Empty(t, recs, "partial data from an interrupted fetch is not a result")
+	client.AssertNumberOfCalls(t, "GetRecommendations", 1) // later regions are never queried
+}
+
+func TestFetchAllRecs_ProviderErrorFailsTheRun(t *testing.T) {
+	captureAppLog(t)
+	cfg := Config{Regions: []string{"us-east-1", "us-west-2"}, Coverage: 100, TermYears: 1, PaymentOption: "partial-upfront"}
+	client := &MockRecommendationsClient{}
+	client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "us-east-1" })).
+		Return(nil, errors.New("expired SSO token")).Once()
+
+	recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+
+	require.Error(t, err, "a fetch failure must not read as 'no recommendations'")
+	assert.Contains(t, err.Error(), "expired SSO token")
+	assert.Empty(t, recs)
+	client.AssertNumberOfCalls(t, "GetRecommendations", 1)
+}
+
+func TestFetchAllRecs_EmptyResultIsNotAnError(t *testing.T) {
+	captureAppLog(t)
+	cfg := Config{Regions: []string{"us-east-1"}, Coverage: 100, TermYears: 1, PaymentOption: "partial-upfront"}
+	client := &MockRecommendationsClient{}
+	client.On("GetRecommendations", mock.Anything, mock.Anything).Return([]common.Recommendation{}, nil)
+
+	recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+
+	require.NoError(t, err)
+	assert.Empty(t, recs)
+}
+
+func TestCheckDuplicates_InterruptedCheckIsTerminalInDryAndRealRuns(t *testing.T) {
+	captureAppLog(t)
+	recs := []common.Recommendation{{ResourceType: "db.t3.small", Count: 5}}
+	for _, dry := range []bool{true, false} {
+		ctx, cancel := context.WithCancel(context.Background())
+		client := &MockServiceClient{}
+		client.On("GetExistingCommitments", mock.Anything).Return([]common.Commitment(nil), context.Canceled).Run(func(mock.Arguments) { cancel() })
+
+		drops := common.NewDropSummary()
+		got := checkDuplicates(ctx, recs, client, dry, drops)
+
+		assert.Nil(t, got, "dryRun=%v: never continue with un-deduplicated counts after an interrupt", dry)
+		assert.Equal(t, 0, drops.Total(), "dryRun=%v: an interrupt is not a failed duplicate check", dry)
+		cancel()
+	}
+}
+
+func TestCheckDuplicatesForCSVRegion_InterruptedCheckStopsEvenOnDryRun(t *testing.T) {
+	captureAppLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &MockServiceClient{}
+	client.On("GetExistingCommitments", mock.Anything).Return([]common.Commitment(nil), context.Canceled).Run(func(mock.Arguments) { cancel() })
+
+	got, ok := checkDuplicatesForCSVRegion(ctx, []common.Recommendation{{ResourceType: "db.t3.small", Count: 5}}, client, common.ServiceRDS, "us-east-1", true)
+
+	assert.False(t, ok, "a dry run used to continue with un-deduplicated counts")
+	assert.Nil(t, got)
+}
+
+func TestFetchAllRecs_InterruptDuringLastRegionDiscardsItsData(t *testing.T) {
+	captureAppLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := Config{Regions: []string{"us-east-1"}, Coverage: 100, TermYears: 1, PaymentOption: "partial-upfront"}
+	client := &MockRecommendationsClient{}
+	rec := common.Recommendation{Service: common.ServiceRDS, Region: "us-east-1", ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10}
+	client.On("GetRecommendations", mock.Anything, mock.Anything).
+		Run(func(mock.Arguments) { cancel() }).
+		Return([]common.Recommendation{rec}, nil).Once()
+
+	recs, _, _ := fetchAllRecs(ctx, aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+
+	assert.Empty(t, recs)
+}

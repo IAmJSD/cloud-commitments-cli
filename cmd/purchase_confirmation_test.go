@@ -72,7 +72,7 @@ func TestRunPurchaseAndReportRequiresTerminal(t *testing.T) {
 		for _, dryRun := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/dryRun=%t", service, dryRun), func(t *testing.T) {
 				dir := t.TempDir()
-				cfg := Config{AuditLog: filepath.Join(dir, "audit.jsonl"), CSVOutput: filepath.Join(dir, "report.csv")}
+				cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(dir, "audit.jsonl"), CSVOutput: filepath.Join(dir, "report.csv")}
 				recs := []common.Recommendation{
 					{Service: service, Region: "us-east-1", ResourceType: "test-instance", Count: 2, EstimatedSavings: 50},
 					{Service: service, Region: "us-west-2", ResourceType: "test-instance", Count: 3, EstimatedSavings: 75},

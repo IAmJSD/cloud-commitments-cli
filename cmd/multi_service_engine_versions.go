@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"runtime"
@@ -41,15 +42,20 @@ type MajorEngineVersionInfo struct {
 }
 
 // queryRunningInstanceEngineVersions queries all running RDS instances and returns their engine versions.
-func queryRunningInstanceEngineVersions(ctx context.Context, cfg Config) (map[string][]InstanceEngineVersion, error) {
+//
+// The returned failedRegions maps each region whose inventory could not be read
+// completely to the cause; the instance map still holds whatever was read. A
+// non-nil error means the inventory is unusable as a whole (config, region
+// listing or canceled context).
+func queryRunningInstanceEngineVersions(ctx context.Context, cfg Config) (instances map[string][]InstanceEngineVersion, failedRegions map[string]error, err error) {
 	awsCfg, err := loadValidationAWSConfig(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	regions, err := getAWSRegions(ctx, awsCfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	return queryRDSInstancesInRegions(ctx, awsCfg, regions)
@@ -100,8 +106,12 @@ type RDSMajorVersionsClient interface {
 }
 
 // queryRDSInstancesInRegions queries RDS instances in all regions concurrently.
-func queryRDSInstancesInRegions(ctx context.Context, awsCfg aws.Config, regions []ec2types.Region) (map[string][]InstanceEngineVersion, error) {
-	instanceVersions := make(map[string][]InstanceEngineVersion)
+// A region that fails (API error on any page, or a worker panic) is reported in
+// failedRegions rather than silently treated as an empty inventory. A canceled
+// ctx is returned as the error.
+func queryRDSInstancesInRegions(ctx context.Context, awsCfg aws.Config, regions []ec2types.Region) (instanceVersions map[string][]InstanceEngineVersion, failedRegions map[string]error, err error) {
+	instanceVersions = make(map[string][]InstanceEngineVersion)
+	failedRegions = make(map[string]error)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -118,18 +128,29 @@ func queryRDSInstancesInRegions(ctx context.Context, awsCfg aws.Config, regions 
 					buf := make([]byte, 4096)
 					n := runtime.Stack(buf, false)
 					log.Printf("ERROR: panic in region worker (region=%s): %v\n%s", regionName, r, buf[:n])
+					mu.Lock()
+					failedRegions[regionName] = fmt.Errorf("panic in region worker: %v", r)
+					mu.Unlock()
 				}
 			}()
-			queryRDSInstancesInRegion(ctx, awsCfg, regionName, instanceVersions, &mu)
+			if regionErr := queryRDSInstancesInRegion(ctx, awsCfg, regionName, instanceVersions, &mu); regionErr != nil {
+				mu.Lock()
+				failedRegions[regionName] = regionErr
+				mu.Unlock()
+			}
 		}(aws.ToString(region.RegionName))
 	}
 
 	wg.Wait()
-	return instanceVersions, nil
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, nil, ctxErr
+	}
+	return instanceVersions, failedRegions, nil
 }
 
-// queryRDSInstancesInRegion queries RDS instances in a single region.
-func queryRDSInstancesInRegion(ctx context.Context, awsCfg aws.Config, regionName string, instanceVersions map[string][]InstanceEngineVersion, mu *sync.Mutex) {
+// queryRDSInstancesInRegion queries RDS instances in a single region and
+// returns the first page error, leaving whatever earlier pages merged in place.
+func queryRDSInstancesInRegion(ctx context.Context, awsCfg aws.Config, regionName string, instanceVersions map[string][]InstanceEngineVersion, mu *sync.Mutex) error {
 	regionCfg := awsCfg.Copy()
 	regionCfg.Region = regionName
 	rdsClient := awsrds.NewFromConfig(regionCfg)
@@ -138,8 +159,7 @@ func queryRDSInstancesInRegion(ctx context.Context, awsCfg aws.Config, regionNam
 	for {
 		localVersions, nextMarker, err := queryRDSInstancesPage(ctx, rdsClient, marker, regionName)
 		if err != nil {
-			log.Printf("⚠️  Warning: Failed to describe RDS instances in %s: %v", regionName, err)
-			break
+			return fmt.Errorf("failed to describe RDS instances in %s: %w", regionName, err)
 		}
 
 		// Merge into shared map with mutex protection
@@ -150,7 +170,7 @@ func queryRDSInstancesInRegion(ctx context.Context, awsCfg aws.Config, regionNam
 		mu.Unlock()
 
 		if nextMarker == nil {
-			break
+			return nil
 		}
 		marker = nextMarker
 	}
@@ -216,13 +236,31 @@ func queryMajorEngineVersionsWithClient(ctx context.Context, rdsClient RDSMajorV
 
 	// Query all engine types we care about
 	engines := []string{"mysql", "postgres", "aurora-mysql", "aurora-postgresql"}
+	var engineErrs []error
 
 	for _, engine := range engines {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if err := fetchMajorEngineVersionsForEngine(ctx, rdsClient, engine, versionInfo); err != nil {
-			log.Printf("Warning: Failed to describe major engine versions for %s: %v", engine, err)
+			// Canceled caller context is terminal (issue #1325); check ctx.Err(),
+			// not the wrapped API error, so SDK-internal timeouts are reported as engine failures.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			// Lifecycle data for an engine is required to tell whether its
+			// instances are on extended support; keep trying the remaining
+			// engines so the error reports every unavailable one (issue #2147).
+			engineErrs = append(engineErrs, fmt.Errorf("major engine versions for %s: %w", engine, err))
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(engineErrs) > 0 {
+		return nil, errors.Join(engineErrs...)
+	}
 	return versionInfo, nil
 }
 
@@ -378,10 +416,14 @@ func extractNumericPrefix(s string) string {
 }
 
 // isInExtendedSupport checks if a version is currently in extended support based on lifecycle dates.
-func isInExtendedSupport(engine, fullVersion string, versionInfo map[string]MajorEngineVersionInfo) bool {
+// The second return value reports whether lifecycle data was available for the
+// lookup: known is false when the major version cannot be extracted or the
+// engine:majorVersion key is missing from versionInfo. Callers on money paths
+// must not treat known=false as "not in extended support" (issue #1313).
+func isInExtendedSupport(engine, fullVersion string, versionInfo map[string]MajorEngineVersionInfo) (extended, known bool) {
 	majorVersion := extractMajorVersion(engine, fullVersion)
 	if majorVersion == "" {
-		return false
+		return false, false
 	}
 
 	// Normalize engine name for lookup
@@ -392,8 +434,7 @@ func isInExtendedSupport(engine, fullVersion string, versionInfo map[string]Majo
 	key := fmt.Sprintf("%s:%s", normalizedEngine, majorVersion)
 	info, exists := versionInfo[key]
 	if !exists {
-		// If we don't have info, assume not in extended support
-		return false
+		return false, false
 	}
 
 	// Check if current date falls within extended support period
@@ -409,11 +450,11 @@ func isInExtendedSupport(engine, fullVersion string, versionInfo map[string]Majo
 		// Past the end date means extended support is over; a zero end date
 		// is open-ended (issue #1182)
 		if lifecycle.LifecycleSupportEndDate.IsZero() || now.Before(lifecycle.LifecycleSupportEndDate) {
-			return true
+			return true, true
 		}
 	}
 
-	return false
+	return false, true
 }
 
 // adjustRecommendationForExcludedVersions reduces the instance count in a recommendation
@@ -445,33 +486,13 @@ func adjustRecommendationForExcludedVersions(rec common.Recommendation, instance
 	// Count how many instances in this region are running versions in extended support
 	excludedCount := 0
 
+	// Warn once per engine:version when lifecycle data is missing instead of
+	// silently treating the instance as not on extended support (issue #1313).
+	unknownLogged := make(map[string]bool)
+
 	for _, version := range versions {
-		// Only count instances in the same region
-		if version.Region != rec.Region {
-			continue
-		}
-
-		// Match engine (normalize by removing spaces/hyphens and comparing lowercase)
-		normalizeEngine := func(engine string) string {
-			normalized := strings.ToLower(engine)
-			normalized = strings.ReplaceAll(normalized, "-", "")
-			normalized = strings.ReplaceAll(normalized, " ", "")
-			return normalized
-		}
-
-		versionEngineNorm := normalizeEngine(version.Engine)
-		recEngineNorm := normalizeEngine(recEngine)
-
-		if versionEngineNorm != recEngineNorm {
-			continue
-		}
-
-		// Check if this version is in extended support
-		if isInExtendedSupport(version.Engine, version.EngineVersion, versionInfo) {
-			majorVersion := extractMajorVersion(version.Engine, version.EngineVersion)
+		if shouldExcludeForExtendedSupport(version, rec, recEngine, versionInfo, unknownLogged) {
 			excludedCount++
-			log.Printf("🚫 Found extended support instance: %s %s in %s running version %s (major version %s is in extended support)",
-				recEngine, rec.ResourceType, rec.Region, version.EngineVersion, majorVersion)
 		}
 	}
 
@@ -483,9 +504,68 @@ func adjustRecommendationForExcludedVersions(rec common.Recommendation, instance
 		if newCount != originalCount {
 			log.Printf("📉 Adjusting recommendation for %s %s in %s: %d instances → %d instances (excluded %d extended support instances)",
 				recEngine, rec.ResourceType, rec.Region, originalCount, newCount, excludedCount)
-			rec.Count = newCount
+			return resizeAfterExclusion(rec, newCount)
 		}
 	}
 
 	return rec
+}
+
+// resizeAfterExclusion sets rec to newCount instances with its money fields
+// scaled to match. A count of zero is the caller's drop signal and carries no
+// money. The caller derives newCount as max(0, rec.Count-excluded) with
+// excluded > 0, so for newCount >= 1 it is always within [1, rec.Count] and
+// common.ResizeCount cannot refuse it; a refusal means that invariant broke,
+// which must not turn into a count with unscaled money.
+func resizeAfterExclusion(rec common.Recommendation, newCount int) common.Recommendation {
+	if newCount < 1 {
+		rec.Count = 0
+		return rec
+	}
+	resized, err := common.ResizeCount(rec, newCount)
+	if err != nil {
+		panic(fmt.Sprintf("extended-support resize invariant broken: %v", err))
+	}
+	return resized
+}
+
+// shouldExcludeForExtendedSupport reports whether a single running instance
+// should be excluded from the recommendation because its engine version is in
+// extended support. Instances in other regions or with other engines never
+// match. When lifecycle data is missing the instance is kept (conservative
+// skip) and a warning is logged once per engine:version via unknownLogged
+// (issue #1313). Extracted from adjustRecommendationForExcludedVersions to
+// keep both functions under the gocyclo cap.
+func shouldExcludeForExtendedSupport(version InstanceEngineVersion, rec common.Recommendation, recEngine string, versionInfo map[string]MajorEngineVersionInfo, unknownLogged map[string]bool) bool {
+	// Only count instances in the same region
+	if version.Region != rec.Region {
+		return false
+	}
+
+	// Match engine (normalize by removing spaces/hyphens and comparing lowercase)
+	if normalizeEngineNameForVersion(version.Engine) != normalizeEngineNameForVersion(recEngine) {
+		return false
+	}
+
+	extended, known := isInExtendedSupport(version.Engine, version.EngineVersion, versionInfo)
+	if !known {
+		// Leave the instance in the count but make the gap visible so
+		// incomplete lifecycle data can't silently steer purchases (issue #1313).
+		warnKey := version.Engine + ":" + version.EngineVersion
+		if !unknownLogged[warnKey] {
+			unknownLogged[warnKey] = true
+			log.Printf("⚠️  No lifecycle data for %s %s in %s: extended-support status unknown, keeping instance in the count",
+				version.Engine, version.EngineVersion, version.Region)
+		}
+		return false
+	}
+
+	if !extended {
+		return false
+	}
+
+	majorVersion := extractMajorVersion(version.Engine, version.EngineVersion)
+	log.Printf("🚫 Found extended support instance: %s %s in %s running version %s (major version %s is in extended support)",
+		recEngine, rec.ResourceType, rec.Region, version.EngineVersion, majorVersion)
+	return true
 }

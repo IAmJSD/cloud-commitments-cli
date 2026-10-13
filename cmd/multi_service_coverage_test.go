@@ -76,9 +76,10 @@ func TestQueryMajorEngineVersionsWithClient_Success(t *testing.T) {
 		"lifecycle data must be carried through from the API response")
 }
 
-// TestQueryMajorEngineVersionsWithClient_EngineErrorContinues asserts the
-// warn-and-continue contract: one engine failing must not drop the results
-// of the others, and the overall call still succeeds.
+// TestQueryMajorEngineVersionsWithClient_EngineErrorContinues asserts that one
+// engine failing does not stop the remaining engine queries, but the overall
+// call fails: missing lifecycle data must not silently disable the
+// extended-support exclusion (#2147).
 func TestQueryMajorEngineVersionsWithClient_EngineErrorContinues(t *testing.T) {
 	stub := &engineKeyedRDSMajorVersionsStub{
 		versionsByEngine: map[string][]rdstypes.DBMajorEngineVersion{
@@ -90,14 +91,13 @@ func TestQueryMajorEngineVersionsWithClient_EngineErrorContinues(t *testing.T) {
 	}
 
 	result, err := queryMajorEngineVersionsWithClient(context.Background(), stub)
-	require.NoError(t, err, "per-engine API failures are warn-and-continue")
+	require.Error(t, err, "an unavailable engine lifecycle query must fail the call")
+	assert.Nil(t, result)
 
 	assert.ElementsMatch(t,
 		[]string{"mysql", "postgres", "aurora-mysql", "aurora-postgresql"},
 		stub.enginesQueried,
 		"a failing engine must not stop the remaining engine queries")
-	require.Len(t, result, 1)
-	assert.Equal(t, "15", result["postgres:15"].MajorEngineVersion)
 }
 
 // TestQueryMajorEngineVersions_ProfileSelection asserts validation-profile
@@ -272,37 +272,43 @@ func TestIsInExtendedSupport_EdgeCases(t *testing.T) {
 		engine           string
 		fullVersion      string
 		expectedExtended bool
+		expectedKnown    bool
 	}{
 		{
 			name:             "MySQL 5.7 in extended support",
 			engine:           "mysql",
 			fullVersion:      "5.7.44",
 			expectedExtended: true,
+			expectedKnown:    true,
 		},
 		{
 			name:             "MySQL 8.0 in standard support",
 			engine:           "mysql",
 			fullVersion:      "8.0.35",
 			expectedExtended: false,
+			expectedKnown:    true,
 		},
 		{
 			name:             "Unknown version",
 			engine:           "mysql",
 			fullVersion:      "9.0.0",
 			expectedExtended: false,
+			expectedKnown:    false,
 		},
 		{
 			name:             "Empty version",
 			engine:           "mysql",
 			fullVersion:      "",
 			expectedExtended: false,
+			expectedKnown:    false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isInExtendedSupport(tt.engine, tt.fullVersion, versionInfo)
-			assert.Equal(t, tt.expectedExtended, result)
+			extended, known := isInExtendedSupport(tt.engine, tt.fullVersion, versionInfo)
+			assert.Equal(t, tt.expectedExtended, extended)
+			assert.Equal(t, tt.expectedKnown, known, "known flag mismatch")
 		})
 	}
 }
@@ -724,7 +730,7 @@ func TestFilterAndAdjustRecommendations_ZeroCoverage(t *testing.T) {
 	toolCfg.MaxInstances = 0
 	toolCfg.OverrideCount = 0
 
-	result, err := filterAndAdjustRecommendations(recommendations, 0.0, toolCfg)
+	result, err := filterAndAdjustRecommendations(context.Background(), recommendations, 0.0, toolCfg)
 	require.NoError(t, err)
 
 	// 0% coverage should return empty
@@ -751,7 +757,7 @@ func TestFilterAndAdjustRecommendations_WithEngineVersionFiltering(t *testing.T)
 	toolCfg.OverrideCount = 0
 	toolCfg.IncludeExtendedSupport = false
 
-	result, err := filterAndAdjustRecommendations(recommendations, 100.0, toolCfg)
+	result, err := filterAndAdjustRecommendations(context.Background(), recommendations, 100.0, toolCfg)
 	require.NoError(t, err)
 
 	// Should return recommendations (engine version filtering is done inside the function)
@@ -773,7 +779,7 @@ func TestFilterAndAdjustRecommendations_MaxInstancesApplied(t *testing.T) {
 	toolCfg.MaxInstances = 15
 	toolCfg.OverrideCount = 0
 
-	result, err := filterAndAdjustRecommendations(recommendations, 100.0, toolCfg)
+	result, err := filterAndAdjustRecommendations(context.Background(), recommendations, 100.0, toolCfg)
 	require.NoError(t, err)
 
 	// Total instances should not exceed maxInstances
@@ -796,7 +802,7 @@ func TestFilterAndAdjustRecommendations_OverrideCountApplied(t *testing.T) {
 	toolCfg.MaxInstances = 0
 	toolCfg.OverrideCount = 5
 
-	result, err := filterAndAdjustRecommendations(recommendations, 100.0, toolCfg)
+	result, err := filterAndAdjustRecommendations(context.Background(), recommendations, 100.0, toolCfg)
 	require.NoError(t, err)
 
 	// All recommendations should have count = OverrideCount

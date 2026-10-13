@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,10 @@ import (
 
 // validateFlags performs validation on command line flags before execution.
 func validateFlags(cmd *cobra.Command, args []string) error {
+	if err := validateServices(cmd); err != nil {
+		return err
+	}
+
 	if err := validateNumericRanges(cmd); err != nil {
 		return err
 	}
@@ -42,7 +47,24 @@ func validateFlags(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return nil
+	return validateSPAccountScope()
+}
+
+// validateSPAccountScope validates --sp-account-scope. Empty means linked.
+func validateSPAccountScope() error {
+	switch strings.ToLower(toolCfg.SPAccountScope) {
+	case "", "linked", "payer":
+		return nil
+	}
+	return fmt.Errorf("invalid sp-account-scope %q: must be linked or payer", toolCfg.SPAccountScope)
+}
+
+func validateServices(cmd *cobra.Command) error {
+	if cmd != nil && cmd.Flags().Changed("services") && len(toolCfg.Services) == 0 {
+		return fmt.Errorf("--services must contain at least one service")
+	}
+	_, err := parseServices(toolCfg.Services)
+	return err
 }
 
 // validateIdempotencyWindow parses --idempotency-window into the whole hours
@@ -75,9 +97,8 @@ func validateRecLookbackPeriod() error {
 // nil if no flag-source-detection is required (e.g. unit-test paths that
 // only need the numeric bounds checks).
 func validateNumericRanges(cmd *cobra.Command) error {
-	// Validate coverage percentage
-	if toolCfg.Coverage < 0 || toolCfg.Coverage > 100 {
-		return fmt.Errorf("coverage percentage must be between 0 and 100, got: %.2f", toolCfg.Coverage)
+	if err := validateCoverageAndSavingsPct(); err != nil {
+		return err
 	}
 
 	if err := validateTargetCoverage(cmd); err != nil {
@@ -114,9 +135,35 @@ func validateNumericRanges(cmd *cobra.Command) error {
 	return nil
 }
 
+// requireFinite rejects NaN and +/-Inf. Every ordered comparison with NaN is
+// false, so range checks like `v < 0 || v > 100` and "is set" guards like
+// `v > 0` silently treat NaN as valid and as unset.
+func requireFinite(name string, v float64) error {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return fmt.Errorf("%s must be a finite number, got: %v", name, v)
+	}
+	return nil
+}
+
+// validateCoverageAndSavingsPct checks --coverage (finite, 0-100) and that
+// --min-savings-pct is finite. target-coverage and min-pool-size call
+// requireFinite in their own validators.
+func validateCoverageAndSavingsPct() error {
+	if err := requireFinite("coverage", toolCfg.Coverage); err != nil {
+		return err
+	}
+	if toolCfg.Coverage < 0 || toolCfg.Coverage > 100 {
+		return fmt.Errorf("coverage percentage must be between 0 and 100, got: %.2f", toolCfg.Coverage)
+	}
+	return requireFinite("min-savings-pct", toolCfg.MinSavingsPct)
+}
+
 // validateMinPoolSize checks that --min-pool-size is a non-negative whole number.
 // Instance counts are integers, so a fractional threshold is nonsensical.
 func validateMinPoolSize() error {
+	if err := requireFinite("min-pool-size", toolCfg.MinPoolSize); err != nil {
+		return err
+	}
 	if toolCfg.MinPoolSize < 0 {
 		return fmt.Errorf("min-pool-size must be 0 (disabled) or a positive whole number, got: %.2f", toolCfg.MinPoolSize)
 	}
@@ -131,6 +178,9 @@ func validateMinPoolSize() error {
 // --coverage (target wins). Split out of validateNumericRanges to keep
 // the parent under gocyclo's complexity threshold.
 func validateTargetCoverage(cmd *cobra.Command) error {
+	if err := requireFinite("target-coverage", toolCfg.TargetCoverage); err != nil {
+		return err
+	}
 	if toolCfg.TargetCoverage < 0 || toolCfg.TargetCoverage > 100 {
 		return fmt.Errorf("target-coverage percentage must be between 0 and 100, got: %.2f", toolCfg.TargetCoverage)
 	}
@@ -180,7 +230,10 @@ func warnRDS3YearNoUpfront() error {
 		return nil
 	}
 
-	services := determineServicesToProcess(toolCfg)
+	services, err := determineServicesToProcess(toolCfg)
+	if err != nil {
+		return err
+	}
 	hasRDS := toolCfg.AllServices || containsService(services, common.ServiceRDS)
 
 	if hasRDS {

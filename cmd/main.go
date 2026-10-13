@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,6 +37,10 @@ const (
 
 // Config holds all configuration for the RI helper tool.
 type Config struct {
+	// CallerAccountID is the account the credentials belong to (STS
+	// GetCallerIdentity), set at run start. Purchases are refused for
+	// recommendations owned by any other account.
+	CallerAccountID        string
 	AuditLog               string
 	CSVInput               string
 	IdempotencyWindow      string
@@ -54,6 +61,7 @@ type Config struct {
 	ExcludeEngines         []string
 	ExcludeSPTypes         []string
 	IncludeSPTypes         []string
+	SPAccountScope         string
 	MaxBreakEvenMonths     int
 	TargetCoverage         float64
 	Coverage               float64
@@ -130,6 +138,8 @@ func init() {
 	rootCmd.Flags().StringSliceVar(&toolCfg.IncludeSPTypes, "include-sp-types", []string{}, "Only include these Savings Plan types (comma-separated: Compute, EC2Instance, SageMaker, Database)")
 	rootCmd.Flags().StringSliceVar(&toolCfg.ExcludeSPTypes, "exclude-sp-types", []string{}, "Exclude these Savings Plan types (comma-separated: Compute, EC2Instance, SageMaker, Database)")
 
+	rootCmd.Flags().StringVar(&toolCfg.SPAccountScope, "sp-account-scope", "linked", "Cost Explorer account scope for Savings Plan recommendations: linked or payer (payer applies to a management account)")
+
 	// Purchase pipeline flags
 	rootCmd.Flags().StringVar(&toolCfg.AuditLog, "audit-log", "./cudly-audit.jsonl", "Path to JSONL audit log file")
 	rootCmd.Flags().StringVar(&toolCfg.IdempotencyWindow, "idempotency-window", "24h", "Lookback window for duplicate purchase detection")
@@ -161,16 +171,9 @@ var toolCfg = Config{}
 
 // validateFlags is now defined in validators.go
 
-// parseServices converts service names to ServiceType. The legacy
-// "savingsplans" / "sp" aliases fan out to all four per-plan-type SP slugs so
-// existing CLI scripts that pass --services savingsplans keep covering every
-// plan type. Specific slugs (savingsplans-compute, etc.) are also accepted for
-// targeted runs.
-//
-// Duplicates are silently dropped via a `seen` set so combinations like
-// `--services savingsplans,savingsplans-compute` don't double-process Compute
-// SP through both the fan-out path and the explicit-slug path.
-func parseServices(serviceNames []string) []common.ServiceType {
+// Legacy Savings Plans aliases fan out to every plan type for existing CLI scripts.
+// Deduplication prevents overlapping aliases from processing a service twice.
+func parseServices(serviceNames []string) ([]common.ServiceType, error) {
 	var result []common.ServiceType
 	seen := make(map[common.ServiceType]struct{})
 	add := func(service common.ServiceType) {
@@ -215,11 +218,17 @@ func parseServices(serviceNames []string) []common.ServiceType {
 		if service, ok := serviceMap[key]; ok {
 			add(service)
 		} else {
-			log.Printf("Warning: Unknown service '%s', skipping", name)
+			validNames := make([]string, 0, len(serviceMap)+3)
+			validNames = append(validNames, "savingsplans", "savings-plans", "sp")
+			for supported := range serviceMap {
+				validNames = append(validNames, supported)
+			}
+			sort.Strings(validNames)
+			return nil, fmt.Errorf("unknown service %q; valid services: %s", name, strings.Join(validNames, ", "))
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // getAllServices returns all supported services.
@@ -379,8 +388,20 @@ func sanitizeAccountName(accountName string) string {
 }
 
 func runTool(cmd *cobra.Command, args []string) {
-	ctx := context.Background()
+	ctx, stop := invocationContext()
+	defer stop()
 
 	// Always use the multi-service implementation
 	runToolMultiService(ctx, toolCfg)
+}
+
+// invocationContext returns the context for one CLI invocation, canceled by
+// SIGINT. stop is for the caller to defer, never to call on the first signal:
+// stopping NotifyContext restores the default handler, so a second Ctrl-C
+// would kill the process mid-purchase. Keeping SIGINT registered until the
+// run returns absorbs further Ctrl-Cs; the wait is bounded by the per-call SDK
+// timeouts and the pre-purchase phases exit at once (see
+// registerShutdownSignalHandler for the operator notice).
+func invocationContext() (ctx context.Context, stop context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt)
 }
