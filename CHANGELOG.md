@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `--regions` now also narrows EC2 Instance Savings Plan recommendations to the listed
+  regions by the plan's own region (previously only `--include-regions` did); a plan
+  with no known region is dropped. Compute, SageMaker and Database plans stay
+  unfiltered. In `--input-csv` mode `--regions` still does not narrow Savings
+  Plans (rows are used as supplied).
 - A `--purchase` run now stops, and exits 1, when an audit record cannot be
   written durably (disk full, log removed or made unwritable mid-run) instead
   of warning and buying more with no audit trail. The audit log is also probed

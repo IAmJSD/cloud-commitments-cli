@@ -127,11 +127,24 @@ func shouldIncludePoolSize(rec *common.Recommendation, cfg *Config) bool {
 // Recommendations from other providers are unaffected: both predicates are
 // gated on common.CommitmentSavingsPlan and fall through to the plain
 // rec.Region comparison for everything else.
+//
+// A region-scoped Savings Plan (EC2 Instance, or one whose region Cost
+// Explorer omitted) is also narrowed by --regions on its own region. Savings
+// Plans are fetched once, not per region (determineRegionsForService), so
+// --regions never reaches them through the fetch loop. An unknown region
+// does not match, so it is dropped rather than bought outside the scope.
+// Not applied in --input-csv mode: CSV rows carry no Provider or
+// CommitmentType, so their Details.Region is not readable here, and the rows
+// are used as supplied.
 func shouldIncludeRecommendationRegion(rec *common.Recommendation, cfg *Config) bool {
 	if awsprovider.IsRegionAgnostic(*rec) {
 		return true
 	}
-	return shouldIncludeRegion(awsprovider.EffectiveRegion(*rec), cfg)
+	region := awsprovider.EffectiveRegion(*rec)
+	if cfg.CSVInput == "" && common.IsSavingsPlan(rec.Service) && len(cfg.Regions) > 0 && !slices.Contains(cfg.Regions, region) {
+		return false
+	}
+	return shouldIncludeRegion(region, cfg)
 }
 
 // shouldIncludeRegion checks if a region should be included based on filters.

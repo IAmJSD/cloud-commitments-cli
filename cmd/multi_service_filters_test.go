@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -752,4 +754,87 @@ func TestApplyFilters_MinPoolSizeMultiRegionMatchesPreExtractionBehaviour(t *tes
 	// one -- see the test's summary report for the actual vs. distinct counts.
 	assert.Equal(t, distinctBelowThreshold*len(regions), totalDropMinPoolSizeNew,
 		"summed multi-region --min-pool-size drop count should match today's pre-existing inflation factor")
+}
+
+// TestApplyFilters_SavingsPlansRegionsFlag pins that --regions narrows
+// region-scoped (EC2 Instance) Savings Plans by Details.Region while
+// account-level plans stay unfiltered, and that it ANDs with
+// --include-regions / --exclude-regions.
+func TestApplyFilters_SavingsPlansRegionsFlag(t *testing.T) {
+	sp := func(svc common.ServiceType, planType, region string) common.Recommendation {
+		return common.Recommendation{
+			Provider:       common.ProviderAWS,
+			Service:        svc,
+			CommitmentType: common.CommitmentSavingsPlan,
+			Count:          1,
+			Details:        &common.SavingsPlanDetails{PlanType: planType, Region: region},
+		}
+	}
+	ec2 := func(region string) common.Recommendation {
+		return sp(common.ServiceSavingsPlansEC2Instance, "EC2Instance", region)
+	}
+
+	tests := []struct {
+		name    string
+		rec     common.Recommendation
+		regions []string
+		include []string
+		exclude []string
+		want    bool
+	}{
+		{"EC2 SP in another region dropped", ec2("us-east-1"), []string{"eu-west-2"}, nil, nil, false},
+		{"EC2 SP in listed region kept", ec2("eu-west-2"), []string{"eu-west-2"}, nil, nil, true},
+		{"Compute SP kept", sp(common.ServiceSavingsPlansCompute, "Compute", ""), []string{"eu-west-2"}, nil, nil, true},
+		{"SageMaker SP kept", sp(common.ServiceSavingsPlansSageMaker, "SageMaker", ""), []string{"eu-west-2"}, nil, nil, true},
+		{"Database SP kept", sp(common.ServiceSavingsPlansDatabase, "Database", ""), []string{"eu-west-2"}, nil, nil, true},
+		{"EC2 SP with unknown region dropped", ec2(""), []string{"eu-west-2"}, nil, nil, false},
+		{"empty --regions leaves EC2 SP alone", ec2("us-east-1"), nil, nil, nil, true},
+		{"regions AND include: outside include dropped", ec2("eu-west-2"), []string{"eu-west-2"}, []string{"us-east-1"}, nil, false},
+		{"regions AND include: both match kept", ec2("eu-west-2"), []string{"eu-west-2", "us-east-1"}, []string{"eu-west-2"}, nil, true},
+		{"regions AND exclude: excluded dropped", ec2("us-east-1"), []string{"eu-west-2", "us-east-1"}, nil, []string{"us-east-1"}, false},
+		{"regions AND exclude: other kept", ec2("eu-west-2"), []string{"eu-west-2", "us-east-1"}, nil, []string{"us-east-1"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{Regions: tt.regions, IncludeRegions: tt.include, ExcludeRegions: tt.exclude}
+			got := applyFilters([]common.Recommendation{tt.rec}, &cfg, nil, nil, "", common.NewDropSummary())
+			assert.Equal(t, tt.want, len(got) == 1)
+		})
+	}
+
+	t.Run("reservation rec is not narrowed by --regions here", func(t *testing.T) {
+		ri := common.Recommendation{Service: common.ServiceRDS, CommitmentType: common.CommitmentReservedInstance, Region: "us-east-1", Count: 1}
+		got := applyFilters([]common.Recommendation{ri}, &Config{Regions: []string{"eu-west-2"}}, nil, nil, "", common.NewDropSummary())
+		assert.Len(t, got, 1)
+	})
+
+	t.Run("eu-west-2 scenario", func(t *testing.T) {
+		recs := []common.Recommendation{ec2("us-east-1"), ec2("eu-west-2"), sp(common.ServiceSavingsPlansCompute, "Compute", "")}
+		got := applyFilters(recs, &Config{Regions: []string{"eu-west-2"}}, nil, nil, "", common.NewDropSummary())
+		if assert.Len(t, got, 2) {
+			assert.Equal(t, common.ServiceSavingsPlansEC2Instance, got[0].Service)
+			assert.Equal(t, "eu-west-2", got[0].Details.(*common.SavingsPlanDetails).Region)
+			assert.Equal(t, common.ServiceSavingsPlansCompute, got[1].Service)
+		}
+	})
+}
+
+// TestApplyFilters_SavingsPlansRegionsFlagCSVModeUnchanged pins that
+// --regions does not narrow Savings Plan rows loaded from --input-csv: CSV
+// rows carry no Provider or CommitmentType, so they are used as supplied.
+func TestApplyFilters_SavingsPlansRegionsFlagCSVModeUnchanged(t *testing.T) {
+	csvPath := filepath.Join(t.TempDir(), "sp.csv")
+	content := `Service,Region,ResourceType,Count,Term,PaymentOption,PlanType,HourlyCommitment,InstanceFamily,DetailsRegion
+savings-plans-compute,,,1,1yr,no-upfront,Compute,1.5,,
+savings-plans-ec2instance,,,1,1yr,no-upfront,EC2Instance,1.5,m5,eu-west-2
+savings-plans-ec2instance,,,1,1yr,no-upfront,EC2Instance,1.5,m5,us-east-1
+`
+	require.NoError(t, os.WriteFile(csvPath, []byte(content), 0o600))
+	recs, err := loadRecommendationsFromCSV(csvPath)
+	require.NoError(t, err)
+	require.Len(t, recs, 3)
+
+	cfg := Config{CSVInput: csvPath, Regions: []string{"eu-west-2"}}
+	got := applyFilters(recs, &cfg, nil, nil, "", common.NewDropSummary())
+	assert.Len(t, got, 3)
 }
