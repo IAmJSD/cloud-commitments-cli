@@ -484,9 +484,9 @@ func TestCSVCapKeepsHighestSavingsNotFileOrder(t *testing.T) {
 		countPerRow  = 6
 	)
 
-	recs := csvRecsFrom(t, `rds,us-east-1,db.t3.small,postgres,6,10.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.large,postgres,6,100.00,1yr,All Upfront,123456789012
+	recs := csvRecsFrom(t, `rds,us-east-1,db.t3.small,postgres,6,10.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.large,postgres,6,100.00,1yr,all-upfront,123456789012
 `)
 
 	var (
@@ -537,8 +537,8 @@ func TestCSVCapDropsTruncationBelowMinCount(t *testing.T) {
 		countPerRow  = 6
 	)
 
-	recs := csvRecsFrom(t, `rds,us-east-1,db.t3.large,postgres,6,100.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,All Upfront,123456789012
+	recs := csvRecsFrom(t, `rds,us-east-1,db.t3.large,postgres,6,100.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,all-upfront,123456789012
 `)
 
 	var (
@@ -571,8 +571,8 @@ func TestCSVMinCountDropsRowsUnderTheFloor(t *testing.T) {
 	isolateAWSEnv(t)
 	const minCount = 5
 
-	recs := csvRecsFrom(t, `rds,us-east-1,db.t3.small,postgres,2,500.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.medium,postgres,6,100.00,1yr,All Upfront,123456789012
+	recs := csvRecsFrom(t, `rds,us-east-1,db.t3.small,postgres,2,500.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.medium,postgres,6,100.00,1yr,all-upfront,123456789012
 `)
 
 	var (
@@ -602,9 +602,9 @@ func TestRunToolFromCSVEnforcesMinCountAndCap(t *testing.T) {
 
 	// Worst-value row first, so file order and savings order disagree.
 	csvPath := writeTestRecommendationsCSV(t, csvFixtureHeader+
-		`rds,us-east-1,db.t3.small,postgres,6,10.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.large,postgres,6,100.00,1yr,All Upfront,123456789012
+		`rds,us-east-1,db.t3.small,postgres,6,10.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.large,postgres,6,100.00,1yr,all-upfront,123456789012
 `)
 
 	tests := []struct {
@@ -688,8 +688,8 @@ func TestCSVCapRanksBySavingsPerInstance(t *testing.T) {
 	isolateAWSEnv(t)
 	const maxInstances = 10
 
-	recs := csvRecsFrom(t, `rds,us-east-1,db.bulk.large,postgres,100,600.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.rich.large,postgres,6,500.00,1yr,All Upfront,123456789012
+	recs := csvRecsFrom(t, `rds,us-east-1,db.bulk.large,postgres,100,600.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.rich.large,postgres,6,500.00,1yr,all-upfront,123456789012
 `)
 
 	var (
@@ -737,8 +737,8 @@ func TestCSVCapRefusesRowsWithoutARankingSignal(t *testing.T) {
 		// Worst alphabetically first, so a name-ordered cap is visible: it
 		// keeps db.aaa.large and drops db.zzz.large regardless of file order.
 		recs := csvRecsFromHeader(t, csvNoSavingsHeader,
-			`rds,us-east-1,db.zzz.large,postgres,6,1yr,All Upfront,123456789012
-rds,us-east-1,db.aaa.large,postgres,6,1yr,All Upfront,123456789012
+			`rds,us-east-1,db.zzz.large,postgres,6,1yr,all-upfront,123456789012
+rds,us-east-1,db.aaa.large,postgres,6,1yr,all-upfront,123456789012
 `)
 
 		var err error
@@ -756,8 +756,8 @@ rds,us-east-1,db.aaa.large,postgres,6,1yr,All Upfront,123456789012
 		// The partial case is the worse one: the blank row loads as $0, ranks
 		// last, and is dropped first, with nothing saying the value was absent
 		// rather than genuinely zero.
-		recs := csvRecsFrom(t, `rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.small,postgres,6,,1yr,All Upfront,123456789012
+		recs := csvRecsFrom(t, `rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.small,postgres,6,,1yr,all-upfront,123456789012
 `)
 
 		var err error
@@ -774,8 +774,8 @@ rds,us-east-1,db.t3.small,postgres,6,,1yr,All Upfront,123456789012
 		// Nothing has to be chosen between, so nothing has to be ranked. A
 		// guard that over-blocks is as wrong as one that never fires.
 		recs := csvRecsFromHeader(t, csvNoSavingsHeader,
-			`rds,us-east-1,db.zzz.large,postgres,6,1yr,All Upfront,123456789012
-rds,us-east-1,db.aaa.large,postgres,6,1yr,All Upfront,123456789012
+			`rds,us-east-1,db.zzz.large,postgres,6,1yr,all-upfront,123456789012
+rds,us-east-1,db.aaa.large,postgres,6,1yr,all-upfront,123456789012
 `)
 
 		var (
@@ -792,8 +792,8 @@ rds,us-east-1,db.aaa.large,postgres,6,1yr,All Upfront,123456789012
 	})
 
 	t.Run("populated savings column still ranks and caps", func(t *testing.T) {
-		recs := csvRecsFrom(t, `rds,us-east-1,db.t3.small,postgres,6,10.00,1yr,All Upfront,123456789012
-rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,All Upfront,123456789012
+		recs := csvRecsFrom(t, `rds,us-east-1,db.t3.small,postgres,6,10.00,1yr,all-upfront,123456789012
+rds,us-east-1,db.t3.medium,postgres,6,500.00,1yr,all-upfront,123456789012
 `)
 
 		var (
@@ -873,8 +873,8 @@ func TestCSVCapOrderIsIndependentOfFileOrder(t *testing.T) {
 	// Two rows at the identical rate ($100 for 6 instances), listed
 	// worst-alphabetically-first.
 	rows := []string{
-		"rds,us-east-1,db.t3.zulu,postgres,6,100.00,1yr,All Upfront,123456789012\n",
-		"rds,us-east-1,db.t3.alpha,postgres,6,100.00,1yr,All Upfront,123456789012\n",
+		"rds,us-east-1,db.t3.zulu,postgres,6,100.00,1yr,all-upfront,123456789012\n",
+		"rds,us-east-1,db.t3.alpha,postgres,6,100.00,1yr,all-upfront,123456789012\n",
 	}
 
 	selection := func(t *testing.T, rows []string) []string {

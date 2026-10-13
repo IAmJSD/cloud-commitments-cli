@@ -611,8 +611,8 @@ ec2,us-west-2,t3.medium,10,123456789012,Development,1yr,all-upfront,2000.75`,
 		},
 		{
 			name: "Valid CSV with minimal fields",
-			csvContent: `Service,Region,ResourceType,Count
-elasticache,eu-west-1,cache.t3.micro,3`,
+			csvContent: `Service,Region,ResourceType,Count,Term,PaymentOption
+elasticache,eu-west-1,cache.t3.micro,3,3yr,partial-upfront`,
 			wantErr: false,
 			validate: func(t *testing.T, recs []common.Recommendation) {
 				require.Len(t, recs, 1)
@@ -624,8 +624,8 @@ elasticache,eu-west-1,cache.t3.micro,3`,
 		},
 		{
 			name: "Valid CSV with empty optional Account field",
-			csvContent: `Service,Region,ResourceType,Count,Account
-rds,us-east-1,db.t3.micro,2,`,
+			csvContent: `Service,Region,ResourceType,Count,Account,Term,PaymentOption
+rds,us-east-1,db.t3.micro,2,,3yr,partial-upfront`,
 			wantErr: false,
 			validate: func(t *testing.T, recs []common.Recommendation) {
 				require.Len(t, recs, 1)
@@ -696,8 +696,8 @@ TOTAL,,,,,3,,`,
 		},
 		{
 			name: "CSV with different column order",
-			csvContent: `Count,Service,Region,ResourceType
-7,rds,ap-south-1,db.r5.large`,
+			csvContent: `Count,Service,Region,ResourceType,Term,PaymentOption
+7,rds,ap-south-1,db.r5.large,3yr,partial-upfront`,
 			wantErr: false,
 			validate: func(t *testing.T, recs []common.Recommendation) {
 				require.Len(t, recs, 1)
@@ -718,25 +718,25 @@ TOTAL,,,,,3,,`,
 		},
 		{
 			name: "Invalid Count value - non-numeric",
-			csvContent: `Service,Region,ResourceType,Count
-rds,us-east-1,db.t3.micro,abc`,
+			csvContent: `Service,Region,ResourceType,Count,Term,PaymentOption
+rds,us-east-1,db.t3.micro,abc,3yr,partial-upfront`,
 			wantErr:     true,
 			errContains: `column 4 "Count": invalid integer`,
 		},
 		{
 			name: "Invalid EstimatedSavings value - non-numeric",
-			csvContent: `Service,Region,ResourceType,Count,EstimatedSavings
-rds,us-east-1,db.t3.micro,5,invalid`,
+			csvContent: `Service,Region,ResourceType,Count,EstimatedSavings,Term,PaymentOption
+rds,us-east-1,db.t3.micro,5,invalid,3yr,partial-upfront`,
 			wantErr:     true,
 			errContains: `column 5 "EstimatedSavings": invalid number`,
 		},
 		{
 			name: "Multiple rows with various services",
-			csvContent: `Service,Region,ResourceType,Count,EstimatedSavings
-rds,us-east-1,db.t3.micro,5,100.00
-ec2,us-west-2,t3.medium,10,200.50
-elasticache,eu-west-1,cache.t3.micro,3,50.25
-opensearch,ap-southeast-1,t3.small.search,2,75.00`,
+			csvContent: `Service,Region,ResourceType,Count,EstimatedSavings,Term,PaymentOption
+rds,us-east-1,db.t3.micro,5,100.00,3yr,partial-upfront
+ec2,us-west-2,t3.medium,10,200.50,3yr,partial-upfront
+elasticache,eu-west-1,cache.t3.micro,3,50.25,3yr,partial-upfront
+opensearch,ap-southeast-1,t3.small.search,2,75.00,3yr,partial-upfront`,
 			wantErr: false,
 			validate: func(t *testing.T, recs []common.Recommendation) {
 				require.Len(t, recs, 4)
@@ -748,8 +748,8 @@ opensearch,ap-southeast-1,t3.small.search,2,75.00`,
 		},
 		{
 			name: "CSV with large Count values",
-			csvContent: `Service,Region,ResourceType,Count
-ec2,us-east-1,t3.large,1000`,
+			csvContent: `Service,Region,ResourceType,Count,Term,PaymentOption
+ec2,us-east-1,t3.large,1000,3yr,partial-upfront`,
 			wantErr: false,
 			validate: func(t *testing.T, recs []common.Recommendation) {
 				require.Len(t, recs, 1)
@@ -758,8 +758,8 @@ ec2,us-east-1,t3.large,1000`,
 		},
 		{
 			name: "CSV with decimal savings",
-			csvContent: `Service,Region,ResourceType,Count,EstimatedSavings
-rds,us-east-1,db.t3.micro,5,1234.5678`,
+			csvContent: `Service,Region,ResourceType,Count,EstimatedSavings,Term,PaymentOption
+rds,us-east-1,db.t3.micro,5,1234.5678,3yr,partial-upfront`,
 			wantErr: false,
 			validate: func(t *testing.T, recs []common.Recommendation) {
 				require.Len(t, recs, 1)
@@ -768,8 +768,8 @@ rds,us-east-1,db.t3.micro,5,1234.5678`,
 		},
 		{
 			name: "CSV with zero EstimatedSavings stays valid",
-			csvContent: `Service,Region,ResourceType,Count,EstimatedSavings
-rds,us-east-1,db.t3.micro,5,0`,
+			csvContent: `Service,Region,ResourceType,Count,EstimatedSavings,Term,PaymentOption
+rds,us-east-1,db.t3.micro,5,0,3yr,partial-upfront`,
 			wantErr: false,
 			validate: func(t *testing.T, recs []common.Recommendation) {
 				require.Len(t, recs, 1)

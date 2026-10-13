@@ -67,7 +67,31 @@ func loadRecommendationsFromCSV(csvPath string) ([]common.Recommendation, error)
 }
 
 // Minimal CSVs require these columns; service-specific columns stay optional.
-var requiredCSVColumns = []string{"Service", "Region", "ResourceType", "Count"}
+// Term and PaymentOption are required because the purchase path reads them per
+// row and must never guess a commitment's term or payment option.
+var requiredCSVColumns = []string{"Service", "Region", "ResourceType", "Count", "Term", "PaymentOption"}
+
+// Accepted Term values match fetchRecommendationsForRegion; accepted
+// PaymentOption values match validatePaymentAndTerm.
+var (
+	validCSVTerms          = []string{"1yr", "3yr"}
+	validCSVPaymentOptions = []string{"all-upfront", "partial-upfront", "no-upfront"}
+)
+
+// parseCSVEnum requires the cell to be exactly one of allowed.
+func parseCSVEnum(record []string, colIdx map[string]int, fieldName string, allowed []string) (string, error) {
+	col := colIdx[fieldName] + 1
+	value := getCSVField(record, colIdx, fieldName)
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("column %d %q: value is required (one of: %s)", col, fieldName, strings.Join(allowed, ", "))
+	}
+	for _, a := range allowed {
+		if value == a {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("column %d %q: invalid value %q (must be one of: %s)", col, fieldName, value, strings.Join(allowed, ", "))
+}
 
 func validateCSVUTF8(fields []string) error {
 	for i, field := range fields {
@@ -145,8 +169,14 @@ func parseCSVRecord(record []string, colIdx map[string]int) (common.Recommendati
 	rec.ResourceType = getCSVField(record, colIdx, "ResourceType")
 	rec.Account = getCSVField(record, colIdx, "Account")
 	rec.AccountName = getCSVField(record, colIdx, "AccountName")
-	rec.Term = getCSVField(record, colIdx, "Term")
-	rec.PaymentOption = getCSVField(record, colIdx, "PaymentOption")
+
+	var err error
+	if rec.Term, err = parseCSVEnum(record, colIdx, "Term", validCSVTerms); err != nil {
+		return rec, err
+	}
+	if rec.PaymentOption, err = parseCSVEnum(record, colIdx, "PaymentOption", validCSVPaymentOptions); err != nil {
+		return rec, err
+	}
 
 	if err := parseCSVCount(record, colIdx, &rec.Count); err != nil {
 		return rec, err

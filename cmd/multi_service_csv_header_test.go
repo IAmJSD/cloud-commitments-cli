@@ -17,16 +17,19 @@ func TestLoadRecommendationsFromCSV_HeaderValidation_1327(t *testing.T) {
 		row         string
 		errContains string
 	}{
-		{"missing Service", "Region,ResourceType,Count\n", "us-east-1,db.t3.micro,2\n", "Service"},
-		{"missing Region", "Service,ResourceType,Count\n", "rds,db.t3.micro,2\n", "Region"},
-		{"missing ResourceType", "Service,Region,Count\n", "rds,us-east-1,2\n", "ResourceType"},
-		{"missing Count", "Service,Region,ResourceType\n", "rds,us-east-1,db.t3.micro\n", "Count"},
-		{"multiple missing", "Service,Count\n", "rds,2\n", "Region, ResourceType"},
+		{"missing Service", "Region,ResourceType,Count,Term,PaymentOption\n", "us-east-1,db.t3.micro,2,3yr,partial-upfront\n", "Service"},
+		{"missing Region", "Service,ResourceType,Count,Term,PaymentOption\n", "rds,db.t3.micro,2,3yr,partial-upfront\n", "Region"},
+		{"missing ResourceType", "Service,Region,Count,Term,PaymentOption\n", "rds,us-east-1,2,3yr,partial-upfront\n", "ResourceType"},
+		{"missing Count", "Service,Region,ResourceType,Term,PaymentOption\n", "rds,us-east-1,db.t3.micro,3yr,partial-upfront\n", "Count"},
+		{"missing Term", "Service,Region,ResourceType,Count,PaymentOption\n", "rds,us-east-1,db.t3.micro,2,partial-upfront\n", "Term"},
+		{"missing PaymentOption", "Service,Region,ResourceType,Count,Term\n", "rds,us-east-1,db.t3.micro,2,3yr\n", "PaymentOption"},
+		{"legacy 4-column header rejected", "Service,Region,ResourceType,Count\n", "rds,us-east-1,db.t3.micro,2\n", "Term, PaymentOption"},
+		{"multiple missing", "Service,Count\n", "rds,2\n", "Region, ResourceType, Term, PaymentOption"},
 		{
 			"legacy TEST-02 headers rejected",
 			"Service,Region,Instance Type,Instance Count\n",
 			"rds,us-east-1,db.t3.micro,2\n",
-			"ResourceType, Count",
+			"ResourceType, Count, Term, PaymentOption",
 		},
 	}
 	for _, tt := range tests {
@@ -41,7 +44,7 @@ func TestLoadRecommendationsFromCSV_HeaderValidation_1327(t *testing.T) {
 
 func TestLoadRecommendationsFromCSV_BOMPrefixed_1327(t *testing.T) {
 	recs, err := loadRecommendationsFromCSV(writeTestRecommendationsCSV(t,
-		"\ufeffService,Region,ResourceType,Count\nrds,us-east-1,db.t3.micro,2\n"))
+		"\ufeffService,Region,ResourceType,Count,Term,PaymentOption\nrds,us-east-1,db.t3.micro,2,3yr,partial-upfront\n"))
 	require.NoError(t, err)
 	require.Len(t, recs, 1)
 	assert.Equal(t, common.ServiceRDS, recs[0].Service)
@@ -51,7 +54,7 @@ func TestLoadRecommendationsFromCSV_BOMPrefixed_1327(t *testing.T) {
 
 func TestLoadRecommendationsFromCSV_Encoding_1327(t *testing.T) {
 	t.Run("UTF-16", func(t *testing.T) {
-		units := utf16.Encode([]rune("Service,Region,ResourceType,Count\nrds,us-east-1,db.t3.micro,2\n"))
+		units := utf16.Encode([]rune("Service,Region,ResourceType,Count,Term,PaymentOption\nrds,us-east-1,db.t3.micro,2,3yr,partial-upfront\n"))
 		for _, tt := range []struct {
 			name  string
 			bom   []byte
@@ -74,31 +77,31 @@ func TestLoadRecommendationsFromCSV_Encoding_1327(t *testing.T) {
 	})
 
 	t.Run("Latin-1 optional header", func(t *testing.T) {
-		err := loadCSVContent(t, "Service,Region,ResourceType,Count,Caf\xe9\n"+
-			"rds,us-east-1,db.t3.micro,2,prod\n")
+		err := loadCSVContent(t, "Service,Region,ResourceType,Count,Caf\xe9,Term,PaymentOption\n"+
+			"rds,us-east-1,db.t3.micro,2,prod,3yr,partial-upfront\n")
 		require.Error(t, err)
 		assert.EqualError(t, err, "CSV header: column 5: invalid UTF-8 encoding")
 	})
 
 	t.Run("Latin-1 AccountName", func(t *testing.T) {
-		err := loadCSVContent(t, "Service,Region,ResourceType,Count,AccountName\n"+
-			"rds,us-east-1,db.t3.micro,2,Caf\xe9\n")
+		err := loadCSVContent(t, "Service,Region,ResourceType,Count,AccountName,Term,PaymentOption\n"+
+			"rds,us-east-1,db.t3.micro,2,Caf\xe9,3yr,partial-upfront\n")
 		require.Error(t, err)
 		assert.EqualError(t, err, "CSV line 2: column 5: invalid UTF-8 encoding")
 	})
 
 	t.Run("invalid ignored field in TOTAL after multiline record", func(t *testing.T) {
-		err := loadCSVContent(t, "Service,Region,ResourceType,Count,Ignored\n"+
-			"rds,us-east-1,db.t3.micro,2,\"prod\naccount\"\n"+
-			"TOTAL,,,2,\xff\n")
+		err := loadCSVContent(t, "Service,Region,ResourceType,Count,Ignored,Term,PaymentOption\n"+
+			"rds,us-east-1,db.t3.micro,2,\"prod\naccount\",3yr,partial-upfront\n"+
+			"TOTAL,,,2,\xff,,\n")
 		require.Error(t, err)
 		assert.EqualError(t, err, "CSV line 4: column 5: invalid UTF-8 encoding")
 	})
 
 	t.Run("valid non-ASCII UTF-8", func(t *testing.T) {
 		recs, err := loadRecommendationsFromCSV(writeTestRecommendationsCSV(t,
-			"Service,Region,ResourceType,Count,AccountName\n"+
-				"rds,us-east-1,db.t3.micro,2,Café 東京\n"))
+			"Service,Region,ResourceType,Count,AccountName,Term,PaymentOption\n"+
+				"rds,us-east-1,db.t3.micro,2,Café 東京,3yr,partial-upfront\n"))
 		require.NoError(t, err)
 		require.Len(t, recs, 1)
 		assert.Equal(t, "Café 東京", recs[0].AccountName)
@@ -109,7 +112,7 @@ func TestLoadRecommendationsFromCSV_Encoding_1327(t *testing.T) {
 func TestLoadRecommendationsFromCSV_EdgeCases_1327(t *testing.T) {
 	t.Run("CRLF line endings", func(t *testing.T) {
 		recs, err := loadRecommendationsFromCSV(writeTestRecommendationsCSV(t,
-			"Service,Region,ResourceType,Count\r\nrds,us-east-1,db.t3.micro,2\r\n"))
+			"Service,Region,ResourceType,Count,Term,PaymentOption\r\nrds,us-east-1,db.t3.micro,2,3yr,partial-upfront\r\n"))
 		require.NoError(t, err)
 		require.Len(t, recs, 1)
 		assert.Equal(t, 2, recs[0].Count)
@@ -117,8 +120,8 @@ func TestLoadRecommendationsFromCSV_EdgeCases_1327(t *testing.T) {
 
 	t.Run("quoted commas and newlines inside fields", func(t *testing.T) {
 		recs, err := loadRecommendationsFromCSV(writeTestRecommendationsCSV(t,
-			"Service,Region,ResourceType,Count,AccountName\n"+
-				"rds,us-east-1,\"db.t3.micro, burstable\",2,\"prod\naccount\"\n"))
+			"Service,Region,ResourceType,Count,AccountName,Term,PaymentOption\n"+
+				"rds,us-east-1,\"db.t3.micro, burstable\",2,\"prod\naccount\",3yr,partial-upfront\n"))
 		require.NoError(t, err)
 		require.Len(t, recs, 1)
 		assert.Equal(t, "db.t3.micro, burstable", recs[0].ResourceType)
@@ -127,21 +130,21 @@ func TestLoadRecommendationsFromCSV_EdgeCases_1327(t *testing.T) {
 
 	t.Run("headers only loads zero recs", func(t *testing.T) {
 		recs, err := loadRecommendationsFromCSV(writeTestRecommendationsCSV(t,
-			"Service,Region,ResourceType,Count\n"))
+			"Service,Region,ResourceType,Count,Term,PaymentOption\n"))
 		require.NoError(t, err)
 		assert.Empty(t, recs)
 	})
 
 	t.Run("wrong field count on a data row", func(t *testing.T) {
 		err := loadCSVContent(t,
-			"Service,Region,ResourceType,Count\nrds,us-east-1,db.t3.micro\n")
+			"Service,Region,ResourceType,Count,Term,PaymentOption\nrds,us-east-1,db.t3.micro\n")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to read CSV record")
 	})
 
 	t.Run("TOTAL row still skipped with full header", func(t *testing.T) {
 		recs, err := loadRecommendationsFromCSV(writeTestRecommendationsCSV(t,
-			"Service,Region,ResourceType,Count\nrds,us-east-1,db.t3.micro,2\nTOTAL,,,2\n"))
+			"Service,Region,ResourceType,Count,Term,PaymentOption\nrds,us-east-1,db.t3.micro,2,3yr,partial-upfront\nTOTAL,,,2,,\n"))
 		require.NoError(t, err)
 		require.Len(t, recs, 1)
 	})
