@@ -67,9 +67,20 @@ func runCompletenessScenario(t *testing.T, service, regionMode, details string) 
 	}
 	var stdout, stderr bytes.Buffer
 	child.Stdout, child.Stderr = &stdout, &stderr
-	require.NoError(t, child.Run(), "stdout: %s\nstderr: %s", &stdout, &stderr)
-	fixture.assertRequests(t)
+	runErr := child.Run()
 	logs := stdout.String() + stderr.String()
+	if details == "api-error" || details == "failed-type" {
+		// A provider failure is a failed run, not "nothing to buy".
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, runErr, &exitErr, logs)
+		require.Equal(t, 1, exitErr.ExitCode(), logs)
+		require.Contains(t, logs, "Cannot complete the recommendation fetch")
+		require.Contains(t, logs, "fixture denied recommendations")
+		require.NoFileExists(t, output)
+		return
+	}
+	require.NoError(t, runErr, "stdout: %s\nstderr: %s", &stdout, &stderr)
+	fixture.assertRequests(t)
 	for _, failure := range []string{"Could not check", "Failed to query", "request send failed", "certificate", "TLS handshake"} {
 		require.NotContains(t, logs, failure, "unexpected ancillary error")
 	}
@@ -125,14 +136,8 @@ func assertSPCompleteness(t *testing.T, output, service, details, logs string) {
 		warnings, failedDetails = len(types), 1
 	case "late-page":
 		warnings, failedScopes = len(types), 1
-	case "failed-type":
-		if service == "savingsplans" {
-			survivors = types[:3]
-		} else {
-			survivors = nil
-		}
 	}
-	if details == "empty" || details == "all-invalid" || details == "api-error" {
+	if details == "empty" || details == "all-invalid" {
 		survivors = nil
 	}
 	require.Equal(t, warnings, strings.Count(logs, "incomplete AWS recommendations:"), logs)
@@ -143,15 +148,8 @@ func assertSPCompleteness(t *testing.T, output, service, details, logs string) {
 			require.Contains(t, logs, "not-a-number")
 		}
 	}
-	failures := 0
-	switch details {
-	case "api-error":
-		failures = len(types)
-	case "failed-type":
-		failures = 1
-	}
-	require.Equal(t, failures, strings.Count(logs, "Failed to fetch recommendations:"), logs)
-	if failures > 0 || details == "late-page" {
+	require.NotContains(t, logs, "Failed to fetch recommendations:")
+	if details == "late-page" {
 		require.Contains(t, logs, "fixture denied recommendations")
 	}
 	require.NotContains(t, logs, "Region discovery incomplete")
@@ -203,12 +201,8 @@ func assertCompletenessDiagnostics(t *testing.T, regionMode, details, stdout, st
 	} else {
 		require.NotContains(t, stdout, "incomplete AWS recommendations")
 	}
-	if details == "api-error" {
-		require.Contains(t, stdout+stderr, "fixture denied recommendations")
-	} else {
-		require.NotContains(t, stdout+stderr, "Failed to fetch recommendations", "partial collection treated as fatal")
-		require.NotContains(t, stdout+stderr, "failed to discover regions", "partial collection treated as fatal")
-	}
+	require.NotContains(t, stdout+stderr, "Failed to fetch recommendations", "partial collection treated as fatal")
+	require.NotContains(t, stdout+stderr, "failed to discover regions", "partial collection treated as fatal")
 }
 
 func assertCompletenessCSV(t *testing.T, output, details, logs string) {
@@ -262,14 +256,16 @@ func TestRecommendationCompletenessHelpers(t *testing.T) {
 			client.On("GetRecommendationsForService", ctx, common.ServiceRDS).Return(tc.recs, tc.err)
 			client.On("GetRecommendations", ctx, mock.Anything).Return(tc.recs, tc.err)
 			regions, err := discoverRegionsForService(ctx, client, common.ServiceRDS)
-			got := fetchRecommendationsForRegion(ctx, client, common.ServiceRDS, "us-east-1", Config{TermYears: 1})
+			got, fetchErr := fetchRecommendationsForRegion(ctx, client, common.ServiceRDS, "us-east-1", Config{TermYears: 1})
 			if !tc.keep {
 				require.ErrorIs(t, err, tc.err)
+				require.ErrorIs(t, fetchErr, tc.err)
 				require.Nil(t, regions)
 				require.Nil(t, got)
 				require.NotContains(t, output.String(), "incomplete AWS recommendations")
 			} else {
 				require.NoError(t, err)
+				require.NoError(t, fetchErr)
 				require.Equal(t, tc.recs, got)
 				require.Len(t, regions, len(tc.recs))
 				require.Equal(t, 2, strings.Count(output.String(), "2 failed details, 1 failed scopes"))

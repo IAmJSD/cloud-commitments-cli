@@ -32,7 +32,8 @@ func TestFetchRecommendationsForRegion_SavingsPlanRowsCarryDetailsRegion(t *test
 	client.On("GetRecommendations", mock.Anything, mock.Anything).
 		Return([]common.Recommendation{ec2InstanceSPRow(), compute}, nil)
 
-	got := fetchRecommendationsForRegion(context.Background(), client, common.ServiceSavingsPlansEC2Instance, spAPIRegion, Config{TermYears: 1})
+	got, err := fetchRecommendationsForRegion(context.Background(), client, common.ServiceSavingsPlansEC2Instance, spAPIRegion, Config{TermYears: 1})
+	require.NoError(t, err)
 
 	require.Len(t, got, 2)
 	assert.Equal(t, "eu-west-2", got[0].Region)

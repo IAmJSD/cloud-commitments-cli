@@ -419,7 +419,8 @@ func TestFetchRecommendationsForRegion_SavingsPlanDoesNotFilterOnEndpointRegion(
 			Run(func(args mock.Arguments) { got = args.Get(1).(*common.RecommendationParams) }).
 			Return([]common.Recommendation{}, nil)
 
-		fetchRecommendationsForRegion(context.Background(), client, tc.service, spAPIRegion, Config{TermYears: 1})
+		_, err := fetchRecommendationsForRegion(context.Background(), client, tc.service, spAPIRegion, Config{TermYears: 1})
+		require.NoError(t, err)
 
 		require.NotNil(t, got, tc.service)
 		assert.Equal(t, tc.wantRegion, got.Region, tc.service)

@@ -508,7 +508,13 @@ func processRegionRecommendations(
 	AppLogger.Printf("\n  📍 [%d/%d] Region: %s\n", regionIndex, totalRegions, region)
 
 	// Fetch recommendations
-	recs := fetchRecommendationsForRegion(ctx, recClient, service, region, cfg)
+	recs, fetchErr := fetchRecommendationsForRegion(ctx, recClient, service, region, cfg)
+	if fetchErr != nil {
+		// Legacy test-only path: the CLI run goes through fetchAndFilterRegionRecs,
+		// which returns this error to the caller.
+		AppLogger.Printf("  ❌ Failed to fetch recommendations: %v\n", fetchErr)
+		return result
+	}
 	if len(recs) == 0 {
 		AppLogger.Printf("  ℹ️  No recommendations found\n")
 		return result
@@ -582,14 +588,21 @@ func processRegionRecommendations(
 	return result
 }
 
+// errRecommendationFetch marks a failure to obtain recommendations from the
+// provider, as opposed to a successful but empty answer.
+var errRecommendationFetch = errors.New("recommendation fetch failed")
+
 // fetchRecommendationsForRegion fetches recommendations from AWS for a specific region.
+// A provider failure is returned, not logged away: an empty slice with a nil
+// error means the provider answered and had nothing to recommend. An
+// incomplete-but-usable answer (partial sweep) is returned with a warning.
 func fetchRecommendationsForRegion(
 	ctx context.Context,
 	recClient provider.RecommendationsClient,
 	service common.ServiceType,
 	region string,
 	cfg Config,
-) []common.Recommendation {
+) ([]common.Recommendation, error) {
 	termStr := "1yr"
 	if cfg.TermYears == 3 {
 		termStr = "3yr"
@@ -622,7 +635,7 @@ func fetchRecommendationsForRegion(
 	var incomplete *recommendations.IncompleteRecommendationsError
 	if errors.As(err, &incomplete) {
 		AppLogger.Printf("  ⚠️  %v\n", incomplete)
-		return recs
+		return recs, nil
 	}
 	if partial := azureprovider.AsPartialSubscriptionFailure(err); partial != nil {
 		// Keep the subscriptions that did answer, but say plainly that the
@@ -634,18 +647,17 @@ func fetchRecommendationsForRegion(
 		for _, f := range partial.Failed {
 			AppLogger.Printf("      subscription %s: %v\n", f.SubscriptionID, f.Err)
 		}
-		return recs
+		return recs, nil
 	}
-	if ctx.Err() != nil {
+	if ctxErr := ctx.Err(); ctxErr != nil {
 		// Interrupted, not a provider failure: the caller stops on ctx.Err().
-		return nil
+		return nil, ctxErr
 	}
 	if err != nil {
-		AppLogger.Printf("  ❌ Failed to fetch recommendations: %v\n", err)
-		return nil
+		return nil, fmt.Errorf("%w: %s in %s: %w", errRecommendationFetch, getServiceDisplayName(service), region, err)
 	}
 
-	return recs
+	return recs, nil
 }
 
 // stampSavingsPlanRegions copies the region Cost Explorer reports for an EC2
@@ -854,7 +866,10 @@ func fetchAndFilterRegionRecs(
 ) ([]common.Recommendation, error) {
 	AppLogger.Printf("\n  📍 [%d/%d] Region: %s\n", regionIndex, totalRegions, region)
 
-	recs := fetchRecommendationsForRegion(ctx, recClient, service, region, cfg)
+	recs, err := fetchRecommendationsForRegion(ctx, recClient, service, region, cfg)
+	if err != nil {
+		return nil, err
+	}
 	if len(recs) == 0 {
 		AppLogger.Printf("  ℹ️  No recommendations found\n")
 		return nil, nil
@@ -930,14 +945,16 @@ func fetchAllRecs(
 			if ctx.Err() != nil {
 				return nil, drops, nil
 			}
-			log.Printf("❌ Failed to determine regions for %s: %v", getServiceDisplayName(service), err)
-			continue
+			return nil, nil, fmt.Errorf("%w: determining regions for %s: %w", errRecommendationFetch, getServiceDisplayName(service), err)
 		}
 		for i, region := range regions {
 			if ctx.Err() != nil {
 				return nil, drops, nil // partial data from an interrupted fetch is not a result
 			}
 			recs, err := fetchAndFilterRegionRecs(ctx, awsCfg, recClient, accountCache, service, region, i+1, len(regions), engineData, cfg, coverageMap, drops)
+			if ctx.Err() != nil {
+				return nil, drops, nil // interrupted mid-fetch: not a result, not a failure
+			}
 			if err != nil {
 				return nil, nil, err
 			}

@@ -33,8 +33,9 @@ func TestFetchRecommendationsForRegion_PassesSPAccountScope(t *testing.T) {
 		Run(func(args mock.Arguments) { got = args.Get(1).(*common.RecommendationParams) }).
 		Return([]common.Recommendation{}, nil)
 
-	fetchRecommendationsForRegion(context.Background(), client, common.ServiceSavingsPlansCompute, spAPIRegion,
+	_, err := fetchRecommendationsForRegion(context.Background(), client, common.ServiceSavingsPlansCompute, spAPIRegion,
 		Config{TermYears: 1, SPAccountScope: "payer"})
+	require.NoError(t, err)
 
 	require.NotNil(t, got)
 	assert.Equal(t, "payer", got.SPAccountScope)
