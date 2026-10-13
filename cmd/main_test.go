@@ -24,12 +24,29 @@ import (
 // file in the repo working directory on every `go test` run. Tests that need
 // to assert on audit-log contents still set their own t.TempDir()-scoped
 // AuditLog, which takes precedence within that test.
+// defaultTestAccount is the account the stubbed credentials belong to.
+const defaultTestAccount = "111111111111"
+
+// wantPurchaseOutcome is the Success and Error report columns for a dry-run
+// row owned by account: the stubbed credentials belong to defaultTestAccount,
+// and rows of any other account are refused.
+func wantPurchaseOutcome(account string) (success, errMsg string) {
+	if account == defaultTestAccount {
+		return "true", ""
+	}
+	return "false", fmt.Sprintf("recommendation is for account %s but the credentials are for account %s; cross-account purchases are not supported, so run with credentials for account %s", account, defaultTestAccount, account)
+}
+
 func TestMain(m *testing.M) {
 	toolCfg.AuditLog = filepath.Join(os.TempDir(), fmt.Sprintf("cudly-test-audit-%d.jsonl", os.Getpid()))
+	toolCfg.CallerAccountID = defaultTestAccount
 	// Keep tests off AWS: the real fetcher is exercised explicitly against a
 	// local stub (useRealEngineVersionFetcher).
 	engineVersionFetcher = func(context.Context, Config, bool) (engineVersionData, error) {
 		return engineVersionData{}, nil
+	}
+	callerAccountFetcher = func(context.Context, aws.Config) (string, error) {
+		return defaultTestAccount, nil
 	}
 	code := m.Run()
 	_ = os.Remove(toolCfg.AuditLog)

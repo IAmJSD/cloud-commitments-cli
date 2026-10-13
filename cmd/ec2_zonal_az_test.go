@@ -62,7 +62,7 @@ func purchaseEC2WithRecorder(t *testing.T, rec common.Recommendation) (common.Pu
 		Credentials: aws.AnonymousCredentials{},
 		Retryer:     func() aws.Retryer { return aws.NopRetryer{} },
 	}
-	cfg := Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 	result, _ := purchaseSingleRec(context.Background(), awsCfg, rec, 1, false, cfg)
 	return result, recorder
 }

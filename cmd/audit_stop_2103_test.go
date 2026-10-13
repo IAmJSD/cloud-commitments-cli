@@ -43,7 +43,7 @@ func failAuditWrites(t *testing.T) {
 func auditCfg(t *testing.T) Config {
 	t.Helper()
 	dir := t.TempDir()
-	return Config{AuditLog: filepath.Join(dir, "audit.jsonl"), CSVOutput: filepath.Join(dir, "report.csv")}
+	return Config{AuditLog: filepath.Join(dir, "audit.jsonl"), CSVOutput: filepath.Join(dir, "report.csv"), CallerAccountID: defaultTestAccount}
 }
 
 func TestExecuteAndReport_AuditWriteFailureStopsFurtherPurchases(t *testing.T) {

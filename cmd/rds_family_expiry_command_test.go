@@ -256,11 +256,12 @@ func assertRDSExpiryCSV(t *testing.T, output, name, logs string) {
 			continue
 		}
 		require.True(t, present, "scenario=%s rec %d missing; rows=%v\nlogs=%s", name, i, rows, logs)
+		wantSuccess, wantErr := wantPurchaseOutcome(columns["Account"])
 		want := map[string]string{
 			"Service": "rds", "Region": "us-east-1", "ResourceType": rec.class, "Term": "1yr", "PaymentOption": "partial-upfront",
 			"Count": strconv.Itoa(count), "ExistingCoverage": fmt.Sprintf("%.1f", s.existing),
 			"UpfrontPayment": fmt.Sprintf("%.2f", float64(count)*100), "EstimatedSavings": fmt.Sprintf("%.2f", float64(count)*100),
-			"RecurringMonthlyCost": fmt.Sprintf("%.2f", float64(count)*10), "Success": "true", "Error": "",
+			"RecurringMonthlyCost": fmt.Sprintf("%.2f", float64(count)*10), "Success": wantSuccess, "Error": wantErr,
 		}
 		for field, value := range want {
 			require.Equal(t, value, columns[field], "scenario=%s rec=%d field=%s (parent count %d)", name, i, field, s.parent[i])

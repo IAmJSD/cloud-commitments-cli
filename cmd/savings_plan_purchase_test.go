@@ -169,7 +169,7 @@ func parserShapedSP() common.Recommendation {
 
 func TestPurchaseSingleRec_SavingsPlanFromParserReachesAPIInSPRegion(t *testing.T) {
 	awsCfg, stub := stubAWSConfig(t)
-	cfg := Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 
 	result, status := purchaseSingleRec(context.Background(), awsCfg, parserShapedSP(), 1, false, cfg)
 
@@ -183,7 +183,7 @@ func TestPurchaseSingleRec_SavingsPlanFromParserReachesAPIInSPRegion(t *testing.
 
 func TestProcessCSVRegionPurchases_SavingsPlanRowWithEmptyRegionAndProvider(t *testing.T) {
 	awsCfg, stub := stubAWSConfig(t)
-	cfg := Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 	// The real loader shape: no Provider, no Region (group key "").
 	rec := common.Recommendation{
 		Service: common.ServiceSavingsPlansCompute, Count: 1, Account: "111111111111", Term: "1yr", PaymentOption: "no-upfront",
@@ -262,7 +262,7 @@ func TestValidatePurchasePreconditions(t *testing.T) {
 		"rds":             {Service: common.ServiceRDS, Region: "us-east-1"},
 	}
 	for name, rec := range ok {
-		assert.NoError(t, validatePurchasePreconditions(rec, rec.Region), name)
+		assert.NoError(t, validatePurchasePreconditions(rec, rec.Region, defaultTestAccount), name)
 	}
 	bad := map[string]common.Recommendation{
 		"sp nil details":   mut(parserShapedSP(), func(r *common.Recommendation) { r.Details = nil }),
@@ -282,12 +282,12 @@ func TestValidatePurchasePreconditions(t *testing.T) {
 		"rds no region": {Service: common.ServiceRDS},
 	}
 	for name, rec := range bad {
-		assert.Error(t, validatePurchasePreconditions(rec, rec.Region), name)
+		assert.Error(t, validatePurchasePreconditions(rec, rec.Region, defaultTestAccount), name)
 	}
 }
 
 func TestPurchaseSingleRec_DryRunReportsPreconditionFailure(t *testing.T) {
-	cfg := Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 	broken := parserShapedSP()
 	broken.Details = nil
 
@@ -303,7 +303,7 @@ func TestPurchaseSingleRec_DryRunReportsPreconditionFailure(t *testing.T) {
 }
 
 func TestProcessPurchaseLoop_DryRunReportsPreconditionFailureOnCSVShapedRows(t *testing.T) {
-	cfg := Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 	noDetailsSP := common.Recommendation{Service: common.ServiceSavingsPlansCompute, Count: 1}
 	csvEC2 := validEC2Rec()
 	csvEC2.Details = &common.ComputeDetails{InstanceType: "m5.large", Platform: "Linux/UNIX"} // loader leaves Tenancy/Scope blank
@@ -351,7 +351,7 @@ func TestCSVRoundTrip_SavingsPlanAndEC2DetailsSurviveWriteThenRead(t *testing.T)
 	assert.Equal(t, ec2.Details, byService[ec2.Service].Details)
 	assert.Equal(t, rds.Details, byService[rds.Service].Details)
 	for _, r := range out {
-		assert.NoError(t, validatePurchasePreconditions(r, r.Region), "%s", r.Service)
+		assert.NoError(t, validatePurchasePreconditions(r, r.Region, defaultTestAccount), "%s", r.Service)
 	}
 }
 
@@ -384,7 +384,7 @@ func TestCSVReader_MalformedHourlyCommitmentRejected(t *testing.T) {
 
 func TestProcessCSVRegionPurchases_SavingsPlanRowFromWrittenCSV(t *testing.T) {
 	awsCfg, stub := stubAWSConfig(t)
-	cfg := Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 	path := filepath.Join(t.TempDir(), "report.csv")
 	sp := parserShapedSP()
 	require.NoError(t, writeMultiServiceCSVReport([]common.PurchaseResult{{Recommendation: sp, Timestamp: time.Now()}}, path))
