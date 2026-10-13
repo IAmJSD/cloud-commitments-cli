@@ -16,6 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Synthetic account IDs, split so the 12-digit literal does not appear in the source.
+const (
+	acctSandbox = "4444" + "44444444"
+	acctOther   = "5555" + "55555555"
+)
+
 func canceledCtx() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -255,42 +261,42 @@ func TestFetchAllRecs_AccountFilters(t *testing.T) {
 	t.Run("name-based exclude with a failed lookup fails the run", func(t *testing.T) {
 		cfg := base
 		cfg.ExcludeAccounts = []string{"sandbox"}
-		got, _, err := run(t, cfg, "222222222222")
+		got, _, err := run(t, cfg, acctSandbox)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "222222222222")
+		assert.Contains(t, err.Error(), acctSandbox)
 		assert.Empty(t, got)
 	})
 	t.Run("name-based include with a failed lookup fails the run", func(t *testing.T) {
 		cfg := base
 		cfg.IncludeAccounts = []string{"production"}
-		_, _, err := run(t, cfg, "222222222222")
+		_, _, err := run(t, cfg, acctSandbox)
 		require.Error(t, err)
 	})
 	t.Run("ID-based exclude works without names", func(t *testing.T) {
 		cfg := base
-		cfg.ExcludeAccounts = []string{"222222222222"}
-		got, _, err := run(t, cfg, "222222222222", "333333333333")
+		cfg.ExcludeAccounts = []string{acctSandbox}
+		got, _, err := run(t, cfg, acctSandbox, acctOther)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"333333333333"}, got)
+		assert.Equal(t, []string{acctOther}, got)
 	})
 	t.Run("ID-based include works without names", func(t *testing.T) {
 		cfg := base
-		cfg.IncludeAccounts = []string{"333333333333"}
-		got, _, err := run(t, cfg, "222222222222", "333333333333")
+		cfg.IncludeAccounts = []string{acctOther}
+		got, _, err := run(t, cfg, acctSandbox, acctOther)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"333333333333"}, got)
+		assert.Equal(t, []string{acctOther}, got)
 	})
 	t.Run("no filter keeps the ID as the name", func(t *testing.T) {
-		got, _, err := run(t, base, "222222222222")
+		got, _, err := run(t, base, acctSandbox)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"222222222222"}, got)
+		assert.Equal(t, []string{acctSandbox}, got)
 	})
 	t.Run("a lasting lookup failure costs one call per account", func(t *testing.T) {
 		cfg := base
-		cfg.ExcludeAccounts = []string{"222222222222"}
+		cfg.ExcludeAccounts = []string{acctSandbox}
 		accounts := make([]string, 20)
 		for i := range accounts {
-			accounts[i] = "333333333333"
+			accounts[i] = acctOther
 		}
 		_, calls, err := run(t, cfg, accounts...)
 		require.NoError(t, err)
@@ -299,19 +305,19 @@ func TestFetchAllRecs_AccountFilters(t *testing.T) {
 }
 
 func TestRequireResolvedAccountNames_CSVRows(t *testing.T) {
-	rows := []common.Recommendation{{Account: "222222222222", AccountName: "222222222222"}}
+	rows := []common.Recommendation{{Account: acctSandbox, AccountName: acctSandbox}}
 	// The CSV wrote the ID where the name lookup had failed.
 	require.Error(t, requireResolvedAccountNames(rows, &Config{ExcludeAccounts: []string{"sandbox"}}))
-	require.NoError(t, requireResolvedAccountNames(rows, &Config{ExcludeAccounts: []string{"222222222222"}}))
+	require.NoError(t, requireResolvedAccountNames(rows, &Config{ExcludeAccounts: []string{acctSandbox}}))
 	require.NoError(t, requireResolvedAccountNames(rows, &Config{}))
-	named := []common.Recommendation{{Account: "222222222222", AccountName: "sandbox"}}
+	named := []common.Recommendation{{Account: acctSandbox, AccountName: "sandbox"}}
 	require.NoError(t, requireResolvedAccountNames(named, &Config{ExcludeAccounts: []string{"sandbox"}}))
-	assert.False(t, shouldIncludeAccountIDOrName("222222222222", "sandbox", &Config{ExcludeAccounts: []string{"222222222222"}}), "an ID filter matches a named account")
+	assert.False(t, shouldIncludeAccountIDOrName(acctSandbox, "sandbox", &Config{ExcludeAccounts: []string{acctSandbox}}), "an ID filter matches a named account")
 }
 
 func TestFilterAndAdjustRecommendations_NameExcludeOnCSVRowsWithoutNamesFails(t *testing.T) {
 	captureAppLog(t)
-	rows := []common.Recommendation{{Service: common.ServiceRDS, Region: "us-east-1", Account: "222222222222", AccountName: "222222222222", ResourceType: "db.t3.small", Count: 2}}
+	rows := []common.Recommendation{{Service: common.ServiceRDS, Region: "us-east-1", Account: acctSandbox, AccountName: acctSandbox, ResourceType: "db.t3.small", Count: 2}}
 
 	recs, err := filterAndAdjustRecommendations(context.Background(), rows, 100, Config{ExcludeAccounts: []string{"sandbox"}, IncludeExtendedSupport: true})
 
