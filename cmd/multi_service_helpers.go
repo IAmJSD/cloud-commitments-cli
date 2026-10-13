@@ -148,14 +148,74 @@ func applyCommonCoverage(recs []common.Recommendation, coverage float64) []commo
 
 // determineServicesToProcess returns the list of services to process based on flags.
 func determineServicesToProcess(cfg Config) ([]common.ServiceType, error) {
-	if cfg.AllServices {
-		return getAllServices(), nil
+	var services []common.ServiceType
+	switch {
+	case cfg.AllServices:
+		services = getAllServices()
+	case len(cfg.Services) > 0:
+		parsed, err := parseServices(cfg.Services)
+		if err != nil {
+			return nil, err
+		}
+		services = parsed
+	default:
+		// Default to RDS only for backward compatibility
+		return []common.ServiceType{common.ServiceRDS}, nil
 	}
-	if len(cfg.Services) > 0 {
-		return parseServices(cfg.Services)
+	return filterSavingsPlanTypes(services, cfg.IncludeSPTypes, cfg.ExcludeSPTypes)
+}
+
+// spTypeServices maps the --include-sp-types / --exclude-sp-types names
+// (matched case-insensitively) to the per-plan-type service slugs.
+var spTypeServices = map[string]common.ServiceType{
+	"compute":     common.ServiceSavingsPlansCompute,
+	"ec2instance": common.ServiceSavingsPlansEC2Instance,
+	"sagemaker":   common.ServiceSavingsPlansSageMaker,
+	"database":    common.ServiceSavingsPlansDatabase,
+}
+
+// spTypeSet resolves --include-sp-types / --exclude-sp-types names to services.
+func spTypeSet(flag string, names []string) (map[common.ServiceType]bool, error) {
+	set := make(map[common.ServiceType]bool, len(names))
+	for _, name := range names {
+		service, ok := spTypeServices[strings.ToLower(strings.TrimSpace(name))]
+		if !ok {
+			return nil, fmt.Errorf("unknown Savings Plan type %q in %s; valid types: Compute, EC2Instance, SageMaker, Database", name, flag)
+		}
+		set[service] = true
 	}
-	// Default to RDS only for backward compatibility
-	return []common.ServiceType{common.ServiceRDS}, nil
+	return set, nil
+}
+
+// filterSavingsPlanTypes drops the Savings Plan services that
+// --include-sp-types / --exclude-sp-types rule out, so only the requested
+// plan types are fetched. Each per-plan-type service queries exactly one plan
+// type and the provider ignores the include/exclude lists for it, so the
+// narrowing has to happen on the service list. Non-SP services pass through.
+func filterSavingsPlanTypes(services []common.ServiceType, include, exclude []string) ([]common.ServiceType, error) {
+	includeSet, err := spTypeSet("--include-sp-types", include)
+	if err != nil {
+		return nil, err
+	}
+	excludeSet, err := spTypeSet("--exclude-sp-types", exclude)
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]common.ServiceType, 0, len(services))
+	for _, service := range services {
+		if common.IsSavingsPlan(service) && !spTypeWanted(service, includeSet, excludeSet) {
+			continue
+		}
+		kept = append(kept, service)
+	}
+	return kept, nil
+}
+
+func spTypeWanted(service common.ServiceType, includeSet, excludeSet map[common.ServiceType]bool) bool {
+	if len(includeSet) > 0 && !includeSet[service] {
+		return false
+	}
+	return !excludeSet[service]
 }
 
 // printRunMode prints the current run mode (dry run or purchase).

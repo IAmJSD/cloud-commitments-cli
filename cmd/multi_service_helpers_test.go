@@ -15,6 +15,7 @@ import (
 	orgtypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetAllAWSRegions(t *testing.T) {
@@ -856,4 +857,40 @@ func TestDetermineServicesToProcess_DefaultAndInvalid(t *testing.T) {
 	result, err := determineServicesToProcess(Config{Services: []string{"rds", "elasticahe"}})
 	assert.ErrorContains(t, err, "elasticahe")
 	assert.Nil(t, result)
+}
+
+func TestDetermineServicesToProcess_SavingsPlanTypeFilters(t *testing.T) {
+	allSP := []common.ServiceType{
+		common.ServiceSavingsPlansCompute, common.ServiceSavingsPlansEC2Instance,
+		common.ServiceSavingsPlansSageMaker, common.ServiceSavingsPlansDatabase,
+	}
+	tests := []struct {
+		name    string
+		cfg     Config
+		want    []common.ServiceType
+		wantErr string
+	}{
+		{"no filter keeps all four", Config{Services: []string{"savingsplans"}}, allSP, ""},
+		{"include narrows, case-insensitive", Config{Services: []string{"savingsplans"}, IncludeSPTypes: []string{"EC2Instance"}},
+			[]common.ServiceType{common.ServiceSavingsPlansEC2Instance}, ""},
+		{"exclude drops", Config{Services: []string{"savingsplans"}, ExcludeSPTypes: []string{"sagemaker", "Database"}},
+			[]common.ServiceType{common.ServiceSavingsPlansCompute, common.ServiceSavingsPlansEC2Instance}, ""},
+		{"include then exclude", Config{Services: []string{"savingsplans"}, IncludeSPTypes: []string{"compute", "ec2instance"}, ExcludeSPTypes: []string{"compute"}},
+			[]common.ServiceType{common.ServiceSavingsPlansEC2Instance}, ""},
+		{"non-SP services untouched", Config{Services: []string{"rds", "savingsplans"}, IncludeSPTypes: []string{"compute"}},
+			[]common.ServiceType{common.ServiceRDS, common.ServiceSavingsPlansCompute}, ""},
+		{"unknown include fails loud", Config{Services: []string{"savingsplans"}, IncludeSPTypes: []string{"ec2"}}, nil, `unknown Savings Plan type "ec2"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := determineServicesToProcess(tc.cfg)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
