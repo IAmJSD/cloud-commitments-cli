@@ -513,8 +513,10 @@ func adjustRecommendationForExcludedVersions(rec common.Recommendation, instance
 
 // resizeAfterExclusion sets rec to newCount instances with its money fields
 // scaled to match. A count of zero is the caller's drop signal and carries no
-// money. A resize that common.ResizeCount refuses is also returned as zero
-// rather than as a count with unscaled money.
+// money. The caller derives newCount as max(0, rec.Count-excluded) with
+// excluded > 0, so for newCount >= 1 it is always within [1, rec.Count] and
+// common.ResizeCount cannot refuse it; a refusal means that invariant broke,
+// which must not turn into a count with unscaled money.
 func resizeAfterExclusion(rec common.Recommendation, newCount int) common.Recommendation {
 	if newCount < 1 {
 		rec.Count = 0
@@ -522,9 +524,7 @@ func resizeAfterExclusion(rec common.Recommendation, newCount int) common.Recomm
 	}
 	resized, err := common.ResizeCount(rec, newCount)
 	if err != nil {
-		log.Printf("❌ Dropping recommendation after extended-support exclusion: %v", err)
-		rec.Count = 0
-		return rec
+		panic(fmt.Sprintf("extended-support resize invariant broken: %v", err))
 	}
 	return resized
 }
