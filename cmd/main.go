@@ -57,6 +57,7 @@ type Config struct {
 	ExcludeEngines         []string
 	ExcludeSPTypes         []string
 	IncludeSPTypes         []string
+	SPAccountScope         string
 	MaxBreakEvenMonths     int
 	TargetCoverage         float64
 	Coverage               float64
@@ -132,6 +133,8 @@ func init() {
 	// Savings Plans specific filters
 	rootCmd.Flags().StringSliceVar(&toolCfg.IncludeSPTypes, "include-sp-types", []string{}, "Only include these Savings Plan types (comma-separated: Compute, EC2Instance, SageMaker, Database)")
 	rootCmd.Flags().StringSliceVar(&toolCfg.ExcludeSPTypes, "exclude-sp-types", []string{}, "Exclude these Savings Plan types (comma-separated: Compute, EC2Instance, SageMaker, Database)")
+
+	rootCmd.Flags().StringVar(&toolCfg.SPAccountScope, "sp-account-scope", "linked", "Cost Explorer account scope for Savings Plan recommendations: linked or payer (payer applies to a management account)")
 
 	// Purchase pipeline flags
 	rootCmd.Flags().StringVar(&toolCfg.AuditLog, "audit-log", "./cudly-audit.jsonl", "Path to JSONL audit log file")
