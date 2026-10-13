@@ -439,9 +439,9 @@ func TestFormatRecurringMonthlyOrBlank(t *testing.T) {
 	}
 }
 
-// TestExtractRDSFamily covers the family-prefix extraction used by the
-// CSV writer to group rows by size-flex family.
-func TestExtractRDSFamily(t *testing.T) {
+// TestExtractFamily covers the CSV Family column: the RDS family prefix and
+// the Savings Plan instance family.
+func TestExtractFamily(t *testing.T) {
 	tests := []struct {
 		name string
 		rec  common.Recommendation
@@ -455,6 +455,9 @@ func TestExtractRDSFamily(t *testing.T) {
 		{"ElastiCache ignored", common.Recommendation{Service: common.ServiceElastiCache, ResourceType: "cache.t3.micro"}, ""},
 		// Malformed RDS type.
 		{"RDS bare type", common.Recommendation{Service: common.ServiceRDS, ResourceType: "db.r7g"}, ""},
+		{"EC2 Instance SP", common.Recommendation{Service: common.ServiceSavingsPlansEC2Instance, Details: &common.SavingsPlanDetails{InstanceFamily: "m5"}}, "m5"},
+		{"Compute SP has no family", common.Recommendation{Service: common.ServiceSavingsPlansCompute, Details: &common.SavingsPlanDetails{}}, ""},
+		{"nil SP details", common.Recommendation{Service: common.ServiceSavingsPlansCompute, Details: (*common.SavingsPlanDetails)(nil)}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -653,7 +653,7 @@ func fetchRecommendationsForRegion(
 // and are left empty.
 func stampSavingsPlanRegions(recs []common.Recommendation) {
 	for i := range recs {
-		if recs[i].CommitmentType == common.CommitmentSavingsPlan && recs[i].Region == "" {
+		if recs[i].CommitmentType == common.CommitmentSavingsPlan {
 			recs[i].Region = awsprovider.EffectiveRegion(recs[i])
 		}
 	}
