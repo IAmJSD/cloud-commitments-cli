@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -815,4 +817,24 @@ func TestApplyFilters_SavingsPlansRegionsFlag(t *testing.T) {
 			assert.Equal(t, common.ServiceSavingsPlansCompute, got[1].Service)
 		}
 	})
+}
+
+// TestApplyFilters_SavingsPlansRegionsFlagCSVModeUnchanged pins that
+// --regions does not narrow Savings Plan rows loaded from --input-csv: CSV
+// rows carry no Provider or CommitmentType, so they are used as supplied.
+func TestApplyFilters_SavingsPlansRegionsFlagCSVModeUnchanged(t *testing.T) {
+	csvPath := filepath.Join(t.TempDir(), "sp.csv")
+	content := `Service,Region,ResourceType,Count,Term,PaymentOption,PlanType,HourlyCommitment,InstanceFamily,DetailsRegion
+savings-plans-compute,,,1,1yr,no-upfront,Compute,1.5,,
+savings-plans-ec2instance,,,1,1yr,no-upfront,EC2Instance,1.5,m5,eu-west-2
+savings-plans-ec2instance,,,1,1yr,no-upfront,EC2Instance,1.5,m5,us-east-1
+`
+	require.NoError(t, os.WriteFile(csvPath, []byte(content), 0o600))
+	recs, err := loadRecommendationsFromCSV(csvPath)
+	require.NoError(t, err)
+	require.Len(t, recs, 3)
+
+	cfg := Config{CSVInput: csvPath, Regions: []string{"eu-west-2"}}
+	got := applyFilters(recs, &cfg, nil, nil, "", common.NewDropSummary())
+	assert.Len(t, got, 3)
 }

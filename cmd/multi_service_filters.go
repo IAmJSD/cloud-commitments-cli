@@ -131,12 +131,15 @@ func shouldIncludePoolSize(rec *common.Recommendation, cfg *Config) bool {
 // Plans are fetched once, not per region (determineRegionsForService), so
 // --regions never reaches them through the fetch loop. An unknown region
 // does not match, so it is dropped rather than bought outside the scope.
+// Not applied in --input-csv mode: CSV rows carry no Provider or
+// CommitmentType, so their Details.Region is not readable here, and the rows
+// are used as supplied.
 func shouldIncludeRecommendationRegion(rec *common.Recommendation, cfg *Config) bool {
 	if awsprovider.IsRegionAgnostic(*rec) {
 		return true
 	}
 	region := awsprovider.EffectiveRegion(*rec)
-	if common.IsSavingsPlan(rec.Service) && len(cfg.Regions) > 0 && !slices.Contains(cfg.Regions, region) {
+	if cfg.CSVInput == "" && common.IsSavingsPlan(rec.Service) && len(cfg.Regions) > 0 && !slices.Contains(cfg.Regions, region) {
 		return false
 	}
 	return shouldIncludeRegion(region, cfg)
