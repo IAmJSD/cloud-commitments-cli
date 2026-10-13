@@ -97,13 +97,14 @@ func assertReservationExpiryCSV(t *testing.T, output, name, logs string) {
 		seen[account] = true
 		index := slices.Index([]string{"111111111111", "222222222222", "333333333333"}[:count], account)
 		require.NotEqual(t, -1, index, "unexpected account %s", account)
+		wantSuccess, wantErr := wantPurchaseOutcome(account)
 		want := map[string]string{
 			"Service": "ec2", "Region": "us-east-1", "ResourceType": "m5.large", "Term": "1yr", "PaymentOption": "partial-upfront",
 			"Count": strconv.Itoa(s.count), "RecommendedCount": "30", "AccountName": fmt.Sprintf("expiry-account-%d", index+1),
 			"Instances": fmt.Sprintf("%.1f", avg), "CoveredInstances": fmt.Sprintf("%.1f", avg*s.existing/100),
 			"ExistingCoverage": fmt.Sprintf("%.1f", s.existing), "ProjectedCoverage": fmt.Sprintf("%.1f", s.existing+float64(s.count)*100/avg),
 			"UpfrontPayment": fmt.Sprintf("%.2f", float64(s.count)*100), "EstimatedSavings": fmt.Sprintf("%.2f", float64(s.count)*100),
-			"RecurringMonthlyCost": fmt.Sprintf("%.2f", float64(s.count)*10), "Success": "true", "Error": "",
+			"RecurringMonthlyCost": fmt.Sprintf("%.2f", float64(s.count)*10), "Success": wantSuccess, "Error": wantErr,
 		}
 		for field, value := range want {
 			require.Equal(t, value, columns[field], "scenario=%s account=%s field=%s", name, account, field)

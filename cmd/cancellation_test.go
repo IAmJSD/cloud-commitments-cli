@@ -112,7 +112,7 @@ func TestExecuteAndReport_CancelDuringPurchaseFinishesInFlightAndReportsWhatRan(
 	slowDelay(t)
 	out := captureAppLog(t)
 	dir := t.TempDir()
-	cfg := Config{AuditLog: filepath.Join(dir, "audit.jsonl"), CSVOutput: filepath.Join(dir, "report.csv")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(dir, "audit.jsonl"), CSVOutput: filepath.Join(dir, "report.csv")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -153,7 +153,7 @@ func TestExecuteAndReport_ErroredPurchaseOnInterruptSaysVerifyInAWS(t *testing.T
 	slowDelay(t)
 	out := captureAppLog(t)
 	dir := t.TempDir()
-	cfg := Config{AuditLog: filepath.Join(dir, "audit.jsonl"), CSVOutput: filepath.Join(dir, "report.csv")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(dir, "audit.jsonl"), CSVOutput: filepath.Join(dir, "report.csv")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	h := &hookTransport{}
@@ -176,7 +176,7 @@ func TestExecuteAndReport_ErroredPurchaseOnInterruptSaysVerifyInAWS(t *testing.T
 func TestProcessPurchaseLoop_AuditRecordWrittenBeforeDelay(t *testing.T) {
 	slowDelay(t)
 	captureAppLog(t)
-	cfg := Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	recs := []common.Recommendation{validEC2Rec(), validEC2Rec()}
@@ -207,7 +207,7 @@ func TestProcessPurchaseLoop_AuditRecordWrittenBeforeDelay(t *testing.T) {
 func TestExecutePurchasePipeline_AuditRecordWrittenBeforeDelay(t *testing.T) {
 	slowDelay(t)
 	captureAppLog(t)
-	cfg := Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	h := &hookTransport{handle: func(r *http.Request) (int, string) {
@@ -283,7 +283,7 @@ func TestInvocationContext_FurtherSigintsAreAbsorbed(t *testing.T) {
 func TestProcessPurchaseLoop_CancelDuringPurchaseDoesNotCancelTheInFlightCall(t *testing.T) {
 	slowDelay(t)
 	captureAppLog(t)
-	cfg := Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
+	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	recs := []common.Recommendation{validEC2Rec(), validEC2Rec()}

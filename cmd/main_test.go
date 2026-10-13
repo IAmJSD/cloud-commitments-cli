@@ -14,6 +14,29 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// defaultTestAccount is the account the stubbed credentials belong to.
+const defaultTestAccount = "111111111111"
+
+// wantPurchaseOutcome is the Success and Error report columns for a dry-run
+// row owned by account: the stubbed credentials belong to defaultTestAccount,
+// and rows of any other account are refused.
+func wantPurchaseOutcome(account string) (success, errMsg string) {
+	if account == defaultTestAccount {
+		return "true", ""
+	}
+	return "false", fmt.Sprintf("recommendation is for account %s but the credentials are for account %s; cross-account purchases are not supported, so run with credentials for account %s", account, defaultTestAccount, account)
+}
+
+// useCallerAccount gives toolCfg the stubbed credentials' account for one test,
+// for tests that call the purchase loops directly instead of through an entry
+// point (which resolves the account itself).
+func useCallerAccount(t *testing.T) {
+	t.Helper()
+	prev := toolCfg.CallerAccountID
+	toolCfg.CallerAccountID = defaultTestAccount
+	t.Cleanup(func() { toolCfg.CallerAccountID = prev })
+}
+
 // TestMain overrides toolCfg.AuditLog's cobra-registered default
 // ("./cudly-audit.jsonl", relative to the process working directory) before
 // any test in this package runs. Since #1609, processPurchaseLoop (shared by
@@ -30,6 +53,9 @@ func TestMain(m *testing.M) {
 	// local stub (useRealEngineVersionFetcher).
 	engineVersionFetcher = func(context.Context, Config, bool) (engineVersionData, error) {
 		return engineVersionData{}, nil
+	}
+	callerAccountFetcher = func(context.Context, aws.Config) (string, error) {
+		return defaultTestAccount, nil
 	}
 	code := m.Run()
 	_ = os.Remove(toolCfg.AuditLog)

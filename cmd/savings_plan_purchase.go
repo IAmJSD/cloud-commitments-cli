@@ -92,7 +92,10 @@ func purchaseRegionLabel(rec common.Recommendation, groupRegion string) string {
 // what the library would reject for a missing or malformed field; it does not
 // call any API. region is the one the client will be built from: the
 // recommendation's own on the main path, the CSV group's on the CSV path.
-func validatePurchasePreconditions(rec common.Recommendation, region string) error {
+func validatePurchasePreconditions(rec common.Recommendation, region, callerAccount string) error {
+	if err := checkPurchaseAccount(rec, callerAccount); err != nil {
+		return err
+	}
 	if _, err := clientRegionFor(rec.Service, region); err != nil {
 		return err
 	}
@@ -107,6 +110,23 @@ func validatePurchasePreconditions(rec common.Recommendation, region string) err
 		if d.Platform == "" || d.Tenancy == "" || d.Scope == "" {
 			return fmt.Errorf("EC2 recommendation for %s is missing platform, tenancy or scope (got %q, %q, %q)", rec.ResourceType, d.Platform, d.Tenancy, d.Scope)
 		}
+	}
+	return nil
+}
+
+// checkPurchaseAccount refuses a recommendation owned by an account other than
+// the one the credentials belong to. Cost Explorer returns linked-account
+// recommendations to a payer, but a purchase call buys in the caller's own
+// account, so buying one would commit the caller's account to another
+// account's usage. An unresolved caller account refuses too, so the check
+// cannot be skipped. A recommendation with no account (CSV rows may omit it)
+// carries nothing to compare.
+func checkPurchaseAccount(rec common.Recommendation, callerAccount string) error {
+	if callerAccount == "" {
+		return fmt.Errorf("cannot purchase %s %s: the AWS account of the credentials is unknown", rec.Service, rec.ResourceType)
+	}
+	if rec.Account != "" && rec.Account != callerAccount {
+		return fmt.Errorf("recommendation is for account %s but the credentials are for account %s; cross-account purchases are not supported, so run with credentials for account %s", rec.Account, callerAccount, rec.Account)
 	}
 	return nil
 }
