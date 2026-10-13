@@ -256,7 +256,7 @@ func writeMultiServiceCSVReport(results []common.PurchaseResult, filepath string
 			string(rec.Service),
 			rec.Region,
 			rec.ResourceType,
-			extractRDSFamily(rec),
+			extractFamily(rec),
 			extractEngine(rec),
 			extractDeployment(rec),
 			formatAvgInstancesOrBlank(rec.AverageInstancesUsedPerHour),
@@ -350,13 +350,11 @@ func formatIntOrBlank(v int) string {
 	return fmt.Sprintf("%d", v)
 }
 
-// extractRDSFamily returns the RDS instance-family prefix (e.g.
-// "db.r7g") for an RDS recommendation, empty for any service whose
-// instance type doesn't follow the RDS three-part naming. Useful for
-// grouping rows in the CSV by family-NU bucket so operators can see at
-// a glance which recs belong to the same size-flex family. Savings Plan rows
-// report the plan's instance family from their Details.
-func extractRDSFamily(rec common.Recommendation) string {
+// extractFamily returns the CSV Family value: the instance-family prefix
+// (e.g. "db.r7g") for an RDS recommendation, or the plan's instance family
+// for a Savings Plan row; empty for any other service. Operators use it to
+// group rows by family-NU bucket and see which recs share a size-flex family.
+func extractFamily(rec common.Recommendation) string {
 	if sp, ok := rec.Details.(*common.SavingsPlanDetails); ok && sp != nil {
 		return sp.InstanceFamily
 	}

@@ -16,7 +16,7 @@ import (
 func ec2InstanceSPRow() common.Recommendation {
 	return common.Recommendation{
 		Provider: common.ProviderAWS, Service: common.ServiceSavingsPlansEC2Instance,
-		CommitmentType: common.CommitmentSavingsPlan, Account: "111111111111", Term: "1yr", PaymentOption: "no-upfront",
+		CommitmentType: common.CommitmentSavingsPlan, Account: "123456789012", Term: "1yr", PaymentOption: "no-upfront",
 		Details: &common.SavingsPlanDetails{PlanType: "EC2Instance", HourlyCommitment: 2.697, InstanceFamily: "m5", Region: "eu-west-2"},
 	}
 }
