@@ -185,9 +185,8 @@ func (p *completenessProxy) respond(req *http.Request) *http.Response {
 	}
 	p.mu.Lock()
 	p.requests[op]++
-	call := p.requests[op]
 	p.mu.Unlock()
-	status, contentType, payload := p.operation(req.Host, op, call)
+	status, contentType, payload := p.operation(req.Host, op)
 	if p.service != "rds" && req.Host == "ce.us-east-1.amazonaws.com" && op == "AWSInsightsIndexService.GetSavingsPlansPurchaseRecommendation" {
 		status, contentType, payload = p.spRecommendation(body)
 	}
@@ -196,7 +195,7 @@ func (p *completenessProxy) respond(req *http.Request) *http.Response {
 		Body:   io.NopCloser(strings.NewReader(payload)), ContentLength: int64(len(payload))}
 }
 
-func (p *completenessProxy) operation(host, op string, call int) (int, string, string) {
+func (p *completenessProxy) operation(host, op string) (int, string, string) {
 	responses := map[string]string{
 		"DescribeDBInstances":           "DBInstances",
 		"DescribeDBMajorEngineVersions": "DBMajorEngineVersions",

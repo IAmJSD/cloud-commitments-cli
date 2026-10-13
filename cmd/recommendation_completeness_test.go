@@ -90,7 +90,7 @@ func runCompletenessScenario(t *testing.T, service, regionMode, details string) 
 	case rdsExpiryService:
 		assertRDSExpiryCSV(t, output, details, logs)
 	case "rds":
-		assertCompletenessDiagnostics(t, regionMode, details, stdout.String(), stderr.String())
+		assertCompletenessDiagnostics(t, details, stdout.String(), stderr.String())
 		assertCompletenessCSV(t, output, details, logs)
 	default:
 		assertSPCompleteness(t, output, service, details, logs)
@@ -183,7 +183,7 @@ func assertSPCompleteness(t *testing.T, output, service, details, logs string) {
 	require.Contains(t, logs, "CSV report written")
 }
 
-func assertCompletenessDiagnostics(t *testing.T, regionMode, details, stdout, stderr string) {
+func assertCompletenessDiagnostics(t *testing.T, details, stdout, stderr string) {
 	t.Helper()
 	malformed := details == "mixed" || details == "all-invalid"
 	if malformed {

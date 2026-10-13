@@ -115,7 +115,7 @@ func TestFetchAllRecs_DefaultRunKeepsRecommendationsInRegionsOutsideTheCallersOp
 	recs, _, err := fetchAllRecs(context.Background(), aws.Config{}, client, NewAccountAliasCache(aws.Config{}), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
 
 	require.NoError(t, err)
-	var regions []string
+	regions := make([]string, 0, len(recs))
 	for i := range recs {
 		regions = append(regions, recs[i].Region)
 	}
