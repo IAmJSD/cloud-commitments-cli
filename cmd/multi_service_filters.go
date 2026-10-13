@@ -184,7 +184,7 @@ func shouldIncludeAccountIDOrName(accountID, accountName string, cfg *Config) bo
 
 // accountIDPattern matches the 12-digit AWS account ID, the only filter value
 // that can be decided without the account's name.
-var accountIDPattern = regexp.MustCompile(`^[0-9]{12}$`)
+var accountIDPattern = regexp.MustCompile(`^\d{12}$`)
 
 // requireResolvedAccountNames fails when an account filter holds a name and a
 // recommendation's account name is unknown (its name lookup failed, so the ID

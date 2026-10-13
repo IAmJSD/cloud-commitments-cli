@@ -237,7 +237,7 @@ func TestFetchAllRecs_AccountFilters(t *testing.T) {
 	// Member accounts cannot call DescribeAccount: every lookup is denied.
 	run := func(t *testing.T, cfg Config, accounts ...string) (accountsOut []string, orgCalls int, err error) {
 		t.Helper()
-		var found []common.Recommendation
+		found := make([]common.Recommendation, 0, len(accounts))
 		for _, a := range accounts {
 			found = append(found, rec(a))
 		}
