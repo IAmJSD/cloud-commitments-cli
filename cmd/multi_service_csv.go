@@ -353,7 +353,7 @@ func formatIntOrBlank(v int) string {
 // extractFamily returns the CSV Family value: the instance-family prefix
 // (e.g. "db.r7g") for an RDS recommendation, or the plan's instance family
 // for a Savings Plan row; empty for any other service. Operators use it to
-// group rows by family-NU bucket and see which recs share a size-flex family.
+// group rows by family (for RDS, the family-NU bucket).
 func extractFamily(rec common.Recommendation) string {
 	if sp, ok := rec.Details.(*common.SavingsPlanDetails); ok && sp != nil {
 		return sp.InstanceFamily
