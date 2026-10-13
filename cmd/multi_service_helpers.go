@@ -540,13 +540,19 @@ func fetchRecommendationsForRegion(
 	}
 	params := common.RecommendationParams{
 		Service:        service,
-		Region:         region,
 		PaymentOption:  cfg.PaymentOption,
 		Term:           termStr,
 		LookbackPeriod: lookback,
 		// Savings Plans specific filters
 		IncludeSPTypes: cfg.IncludeSPTypes,
 		ExcludeSPTypes: cfg.ExcludeSPTypes,
+	}
+	// For Savings Plans, region is only the endpoint the account-level call is
+	// signed in (spAPIRegion), not a filter. The provider folds params.Region
+	// into its include-region set, which would drop every EC2 Instance plan
+	// recommended outside that endpoint region.
+	if !common.IsSavingsPlan(service) {
+		params.Region = region
 	}
 
 	recs, err := recClient.GetRecommendations(ctx, &params)
