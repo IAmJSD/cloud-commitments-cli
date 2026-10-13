@@ -39,7 +39,7 @@ cudly --services rds --exclude-accounts sandbox
 --exclude-regions  Exclude recommendations for these AWS regions (comma-separated)
 ```
 
-When `--regions` is omitted, cudly enumerates all opted-in AWS regions via EC2 `DescribeRegions` and queries each of them; discovering regions from Cost Explorer recommendations is only a fallback used when that region listing fails. (Savings Plans are account-level and are always queried once via `us-east-1` when `--regions` is empty.) `--include-regions` and `--exclude-regions` are applied afterwards as a filter on the fetched recommendations (matching each recommendation's region), so they reduce the results but do not change which regions are queried. If both `--regions` and `--include-regions` are set, the queried regions come from `--regions` and the results are then narrowed by the include/exclude lists.
+When `--regions` is omitted, cudly takes the regions from the Cost Explorer recommendations themselves (not from EC2 `DescribeRegions`), so recommendations in regions that only a linked account has opted into are included. Savings Plans are account-level and are always queried once via `us-east-1`; `--regions` is ignored for them, and `--include-regions` / `--exclude-regions` are what narrow Savings Plan results. `--include-regions` and `--exclude-regions` are applied afterwards as a filter on the fetched recommendations (matching each recommendation's region), so they reduce the results but do not change which regions are queried. If both `--regions` and `--include-regions` are set, the queried regions come from `--regions` and the results are then narrowed by the include/exclude lists.
 
 ```bash
 # Only US and EU recommendations
@@ -56,7 +56,7 @@ cudly --services rds --exclude-regions ap-southeast-1
 --exclude-engines  Exclude these database engines (comma-separated)
 ```
 
-Engine names are matched against the engine field returned by the Cost Explorer recommendation (e.g. `mysql`, `postgresql`, `redis`, `memcached`, `aurora-postgresql`). Comparisons are case-insensitive.
+Engine names are matched against the engine field returned by the Cost Explorer recommendation (e.g. `mysql`, `postgresql`, `redis`, `memcached`, `aurora-postgresql`). Comparisons are case-insensitive. EC2 recommendations match on the platform string, so `--exclude-engines windows` excludes `Windows` but does not match `Windows with SQL Server`; list each platform you want to exclude.
 
 ```bash
 # Only Redis ElastiCache RIs
@@ -164,7 +164,14 @@ cudly --services rds,elasticache --min-savings-pct 20
 --max-break-even-months <int>   Maximum break-even period in months (0 = no filter)
 ```
 
-Drop recommendations where the break-even period exceeds this many months. A break-even period is the number of months until the upfront cost of the RI is recovered by the recurring discount. Recommendations without a computable break-even period (e.g. no-upfront) pass through unfiltered.
+Drop recommendations where the break-even period exceeds this many months. A break-even period is the number of months until the upfront payment is recovered by the recurring discount:
+
+```text
+gross monthly savings = EstimatedSavings + upfront / term months
+break-even months     = upfront / gross monthly savings
+```
+
+`EstimatedSavings` is already net of the amortized upfront, so the term amortization is added back before dividing. A provider-supplied break-even wins over the formula. No-upfront recommendations (upfront 0) have a break-even of 0 and always pass. A recommendation with an upfront payment whose break-even cannot be computed (negative or non-finite money, or a term other than 1 or 3 years) is dropped, with the reason in the drop summary, because the limit cannot be enforced on it. If net savings are not positive the break-even is infinite and the recommendation is dropped.
 
 **Refused on `--input-csv` runs.** A recommendations CSV carries no break-even column, so this filter has nothing to read. Combining the two flags fails at startup rather than running with the threshold silently unenforced; drop the flag, or filter the CSV before passing it in. Teaching the CSV format to carry the column is tracked in [#1819](https://github.com/LeanerCloud/CUDly/issues/1819).
 
@@ -215,6 +222,10 @@ cudly --services rds \
   --target-coverage 80 \
   --min-pool-size 5
 ```
+
+## Coverage sizing
+
+`--coverage <percent>` scales each recommendation's count by the percentage and rounds the result **down**. A row whose count rounds to 0 is dropped and counted in the drop summary as `--coverage-sized-to-zero`. For example, `--coverage 50` turns a count of 1 into 0 and drops it, and a count of 3 into 1. Money fields are scaled by the same ratio as the count. `--target-coverage` sizing reports its own `target-sized-to-zero` reason.
 
 ## Combining filters
 

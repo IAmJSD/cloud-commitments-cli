@@ -394,7 +394,7 @@ func TestApplySizing_LegacyCoverageRecordsCountsFlooredToZero(t *testing.T) {
 	require.Len(t, out, 1)
 	assert.Equal(t, 1, out[0].Count)
 	assert.Equal(t, 1, drops.Total())
-	assert.Contains(t, drops.FormatOneLine(), common.DropTargetSizedToZero)
+	assert.Contains(t, drops.FormatOneLine(), common.DropCoverageSizedToZero)
 }
 
 func TestAdjustRecommendationsForExisting(t *testing.T) {

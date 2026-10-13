@@ -872,3 +872,37 @@ func TestQueryRunningInstanceEngineVersions_ErrorHandling(t *testing.T) {
 		})
 	}
 }
+
+// TestAdjustRecommendationForExcludedVersions_ScalesMoneyWithCount: cutting the
+// count must scale the money fields with it, or the report keeps the full
+// recommendation's cost for fewer instances.
+func TestAdjustRecommendationForExcludedVersions_ScalesMoneyWithCount(t *testing.T) {
+	monthly := 30.0
+	recommendation := common.Recommendation{
+		Service:              common.ServiceRDS,
+		Region:               "us-west-2",
+		ResourceType:         "db.r6g.large",
+		Count:                3,
+		CommitmentCost:       900,
+		OnDemandCost:         600,
+		EstimatedSavings:     150,
+		RecurringMonthlyCost: &monthly,
+		Details:              &common.DatabaseDetails{Engine: "aurora-mysql"},
+	}
+	instanceVersions := map[string][]InstanceEngineVersion{
+		"db.r6g.large": {
+			{Engine: "aurora-mysql", EngineVersion: "5.7.mysql_aurora.2.12.0", InstanceClass: "db.r6g.large", Region: "us-west-2"},
+		},
+	}
+
+	result := adjustRecommendationForExcludedVersions(recommendation, instanceVersions, createTestVersionInfo())
+
+	assert.Equal(t, 2, result.Count)
+	assert.InDelta(t, 600.0, result.CommitmentCost, 0.01, "2/3 of 900")
+	assert.InDelta(t, 400.0, result.OnDemandCost, 0.01)
+	assert.InDelta(t, 100.0, result.EstimatedSavings, 0.01)
+	if assert.NotNil(t, result.RecurringMonthlyCost) {
+		assert.InDelta(t, 20.0, *result.RecurringMonthlyCost, 0.01)
+	}
+	assert.InDelta(t, 30.0, monthly, 0.001, "the input's pointer is not mutated")
+}
