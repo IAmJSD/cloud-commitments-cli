@@ -117,10 +117,12 @@ coordinates agents on one machine; assignment is what coordinates people.
    looks stale. If it has had no activity and no linked PR for 7 days, ask
    on the issue, mentioning the owner. Take it over once they agree or
    unassign. If they have not replied after 3 more days, comment that you
-   are taking it over. That takeover comment supersedes the stale claim:
-   claim the issue as in step 2, but only claims posted after your
-   takeover comment count when checking for an earlier claim. A
-   maintainer can move the assignment if you lack write access.
+   are taking it over. That comment is your claim and supersedes only the
+   stale owner's claim: when you check for an earlier claim as in step 2,
+   ignore the stale owner, but any other claim posted before your takeover
+   comment still wins. Then move the assignment to yourself:
+   `gh issue edit <N> --repo LeanerCloud/cloud-commitments-cli --add-assignee @me --remove-assignee <old-owner>`
+   (or ask a maintainer to, if you lack write access).
 
 4. **Link the PR.** Put `Closes #<N>` in the PR body so the issue and PR
    stay connected (and the PR labeling rule below can find the issue).
