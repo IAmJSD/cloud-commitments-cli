@@ -117,8 +117,10 @@ coordinates agents on one machine; assignment is what coordinates people.
    looks stale. If it has had no activity and no linked PR for 7 days, ask
    on the issue, mentioning the owner. Take it over once they agree or
    unassign. If they have not replied after 3 more days, comment that you
-   are taking it over, then claim it as in step 2 (a maintainer can move
-   the assignment if you lack write access).
+   are taking it over. That takeover comment supersedes the stale claim:
+   claim the issue as in step 2, but only claims posted after your
+   takeover comment count when checking for an earlier claim. A
+   maintainer can move the assignment if you lack write access.
 
 4. **Link the PR.** Put `Closes #<N>` in the PR body so the issue and PR
    stay connected (and the PR labeling rule below can find the issue).
