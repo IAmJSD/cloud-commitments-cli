@@ -81,10 +81,14 @@ coordinates agents on one machine; assignment is what coordinates people.
    ```bash
    for p in p0 p1 p2 p3; do
      echo "== priority/$p"
-     gh issue list --repo LeanerCloud/cloud-commitments-cli --label "priority/$p" \
+     gh issue list --repo LeanerCloud/cloud-commitments-cli --label "priority/$p" --limit 500 \
        --search "no:assignee -label:status/blocked -label:status/needs-info -label:status/wontdo sort:created-asc" \
        --json number,title --jq '.[] | "#\(.number) \(.title)"'
    done
+   echo "== no priority label"
+   gh issue list --repo LeanerCloud/cloud-commitments-cli --limit 500 \
+     --search "no:assignee -label:status/blocked -label:status/needs-info -label:status/wontdo sort:created-asc -label:priority/p0 -label:priority/p1 -label:priority/p2 -label:priority/p3" \
+     --json number,title --jq '.[] | "#\(.number) \(.title)"'
    ```
 
    Issues with no `priority/*` label come after `p3`. The query only sees
@@ -93,8 +97,9 @@ coordinates agents on one machine; assignment is what coordinates people.
    `gh pr list --repo LeanerCloud/cloud-commitments-cli --search "<issue number> in:body"`.
 
 2. **Claim it before writing any code.** Assign yourself, then re-read the
-   assignees. If anyone else is also assigned, you lost the race: remove
-   yourself and pick another issue.
+   assignees and comments. If someone else is also assigned or has posted
+   a claim comment, the earliest claim on the issue timeline wins; if that
+   is not you, remove yourself and pick another issue.
 
    ```bash
    gh issue edit <N> --repo LeanerCloud/cloud-commitments-cli --add-assignee @me
@@ -104,11 +109,16 @@ coordinates agents on one machine; assignment is what coordinates people.
    If you cannot assign yourself (no write access yet), comment
    `Claiming: working on this` on the issue instead. A claim comment
    counts the same as an assignment, including the 7-day rule in step 3.
+   After posting, re-read the issue the same way: if an earlier claim
+   exists, delete your comment and pick another issue.
 
 3. **Respect other people's claims.** An issue that is assigned, or has a
    claim comment, belongs to that person. Do not work on it, even if it
    looks stale. If it has had no activity and no linked PR for 7 days, ask
-   on the issue and only take it over once the owner agrees or unassigns.
+   on the issue, mentioning the owner. Take it over once they agree or
+   unassign. If they have not replied after 3 more days, comment that you
+   are taking it over, then claim it as in step 2 (a maintainer can move
+   the assignment if you lack write access).
 
 4. **Link the PR.** Put `Closes #<N>` in the PR body so the issue and PR
    stay connected (and the PR labeling rule below can find the issue).
