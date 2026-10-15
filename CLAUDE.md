@@ -67,6 +67,61 @@ surfaced bugs found while working here go into this repository's GitHub
 issues instead. See `CONTRIBUTING.md` under "Known Issues Sweep" for the
 full convention (including the cross-component sweep in the platform repo).
 
+## Issue assignment — claim before you work (MANDATORY)
+
+Several people (and their agents) work through this repo's issue queue in
+parallel. GitHub issue assignment is the lock that keeps two of them from
+fixing the same thing. The `~/.claude/agent-comms/` bus below only
+coordinates agents on one machine; assignment is what coordinates people.
+
+1. **Pick work in priority order.** Take the highest-priority open issue
+   that nobody owns, oldest first within a priority. Skip anything
+   labelled `status/blocked`, `status/needs-info` or `status/wontdo`:
+
+   ```bash
+   for p in p0 p1 p2 p3; do
+     echo "== priority/$p"
+     gh issue list --repo LeanerCloud/cloud-commitments-cli --label "priority/$p" \
+       --search "no:assignee -label:status/blocked -label:status/needs-info -label:status/wontdo sort:created-asc" \
+       --json number,title --jq '.[] | "#\(.number) \(.title)"'
+   done
+   ```
+
+   Issues with no `priority/*` label come after `p3`. The query only sees
+   assignees, so open the issue and check its comments for a claim (step 2)
+   too. Before claiming, also check that no open PR already addresses it:
+   `gh pr list --repo LeanerCloud/cloud-commitments-cli --search "<issue number> in:body"`.
+
+2. **Claim it before writing any code.** Assign yourself, then re-read the
+   assignees. If anyone else is also assigned, you lost the race: remove
+   yourself and pick another issue.
+
+   ```bash
+   gh issue edit <N> --repo LeanerCloud/cloud-commitments-cli --add-assignee @me
+   gh issue view <N> --repo LeanerCloud/cloud-commitments-cli --json assignees --jq '[.assignees[].login]'
+   ```
+
+   If you cannot assign yourself (no write access yet), comment
+   `Claiming: working on this` on the issue instead. A claim comment
+   counts the same as an assignment, including the 7-day rule in step 3.
+
+3. **Respect other people's claims.** An issue that is assigned, or has a
+   claim comment, belongs to that person. Do not work on it, even if it
+   looks stale. If it has had no activity and no linked PR for 7 days, ask
+   on the issue and only take it over once the owner agrees or unassigns.
+
+4. **Link the PR.** Put `Closes #<N>` in the PR body so the issue and PR
+   stay connected (and the PR labeling rule below can find the issue).
+
+5. **Release what you drop.** If you stop working on an issue without a
+   PR, unassign yourself (`gh issue edit <N> --repo LeanerCloud/cloud-commitments-cli --remove-assignee @me`)
+   and leave a short comment on where you got to, so the next person
+   can pick it up.
+
+Work that is not tracked by an issue yet (for example a larger UI or
+integration effort) gets an issue first, assigned to whoever is doing it,
+so it shows up as taken.
+
 ## Post-push CI watcher (MANDATORY — even for one-line fix commits)
 
 After **every** `git push` that publishes new commits to a PR branch on
