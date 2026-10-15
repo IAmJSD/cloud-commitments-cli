@@ -103,7 +103,10 @@ coordinates agents on one machine; assignment is what coordinates people.
 
    ```bash
    gh issue edit <N> --repo LeanerCloud/cloud-commitments-cli --add-assignee @me
-   gh issue view <N> --repo LeanerCloud/cloud-commitments-cli --json assignees --jq '[.assignees[].login]'
+   gh issue view <N> --repo LeanerCloud/cloud-commitments-cli --json assignees,comments \
+     --jq '{assignees: [.assignees[].login],
+            claims: [.comments[] | select(.body | test("(?i)claim"))
+                     | "\(.createdAt) \(.author.login): \(.body[0:80])"]}'
    ```
 
    If you cannot assign yourself (no write access yet), comment
