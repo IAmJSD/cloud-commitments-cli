@@ -123,7 +123,8 @@ coordinates agents on one machine; assignment is what coordinates people.
    ```bash
    gh issue view <N> --repo LeanerCloud/cloud-commitments-cli --json assignees,comments \
      --jq '"assignees: \([.assignees[].login] | join(", "))",
-           (.comments[] | select(.body | test("^(Claiming|Taking over|Released):"))
+           (.comments[] | select((.body | test("^(Claiming|Taking over|Released):"))
+                                 or (.body | test("claimed by"; "i")))
             | "\(.createdAt) \(.author.login): \(.body | split("\n")[0])")'
    ```
 
