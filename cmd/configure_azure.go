@@ -168,37 +168,40 @@ func storeAzureCredentials(ctx context.Context, store SecretsStore, stackName st
 	return nil
 }
 
-func runConfigureAzure(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
-	reader := bufio.NewReader(os.Stdin)
+func runConfigureAzure(_ *cobra.Command, _ []string) error {
+	return configureAzure(context.Background(), bufio.NewReader(os.Stdin))
+}
 
+// configureAzure runs the configure-azure flow, reading operator input from
+// reader.
+func configureAzure(ctx context.Context, reader *bufio.Reader) error {
 	fmt.Println("Configure Azure Service Principal credentials for CUDly")
 	fmt.Println("========================================================")
 	fmt.Println()
+
+	// Open the Secrets Manager store (AWS config + credentials) BEFORE the
+	// wizard can create a service principal: these are the likeliest
+	// failures and have no side effects, so failing here never leaves an
+	// orphaned service principal whose undisplayed secret is lost.
+	store, err := openAzureSecretsStoreFn(ctx)
+	if err != nil {
+		return err
+	}
 
 	// Run Azure CLI setup if not skipped. When the wizard creates a service
 	// principal, its credentials are carried straight into the store step so
 	// the client secret never round-trips through the terminal.
 	var created *AzureCredentials
 	if !azureOpts.SkipSetup {
-		var err error
 		if created, err = runAzureSetupCommands(ctx, reader); err != nil {
 			return err
 		}
-	}
-
-	cfg, err := loadAWSConfigForAzure(ctx)
-	if err != nil {
-		return withAzureSPRecoveryHint(err, created)
 	}
 
 	creds, err := collectAzureCredentials(reader, created)
 	if err != nil {
 		return err
 	}
-
-	smClient := secretsmanager.NewFromConfig(cfg)
-	store := NewAWSSecretsStore(smClient)
 
 	if err := storeAzureCredentials(ctx, store, azureOpts.StackName, creds); err != nil {
 		return withAzureSPRecoveryHint(err, created)
@@ -216,6 +219,30 @@ func runConfigureAzure(cmd *cobra.Command, args []string) error {
 	fmt.Println("CUDly can now manage Azure Reserved Instances and Savings Plans.")
 
 	return nil
+}
+
+// openAzureSecretsStoreFn builds the Secrets Manager store used by
+// configureAzure. It is a variable so unit tests can substitute a mock and
+// never reach AWS.
+var openAzureSecretsStoreFn = openAzureSecretsStore
+
+// openAzureSecretsStore loads the AWS config and resolves AWS credentials, then
+// returns a Secrets Manager store. Resolving credentials up front makes a
+// missing or expired AWS login fail before any Azure resource is created.
+func openAzureSecretsStore(ctx context.Context) (SecretsStore, error) {
+	cfg, err := loadAWSConfigForAzure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Credentials == nil {
+		return nil, fmt.Errorf("failed to resolve AWS credentials: no credential provider configured")
+	}
+	credCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := cfg.Credentials.Retrieve(credCtx); err != nil {
+		return nil, fmt.Errorf("failed to resolve AWS credentials: %w", err)
+	}
+	return NewAWSSecretsStore(secretsmanager.NewFromConfig(cfg)), nil
 }
 
 // loadAWSConfigForAzure loads AWS configuration with optional profile.
@@ -255,7 +282,7 @@ func collectAzureCredentials(reader *bufio.Reader, created *AzureCredentials) (A
 		return creds, nil
 	}
 
-	fmt.Println("\nEnter the credentials from the Service Principal output above:")
+	fmt.Println("\nEnter the credentials of an existing Azure Service Principal:")
 	fmt.Println()
 
 	if err := promptForAzureCredentialFields(reader, &creds); err != nil {
@@ -574,7 +601,9 @@ func printAzureSPResult(result azureSPResult, subscriptionID, stackName string) 
 }
 
 // withAzureSPRecoveryHint annotates a failure that happens after the wizard
-// created a service principal but before its secret was stored. The secret was
+// created a service principal but before its secret was stored (AWS config
+// and credentials are checked before creation, so this covers the remaining
+// store-time failures such as ListSecrets/UpdateSecret errors). The secret was
 // never displayed, so the operator is told how to mint a replacement instead.
 func withAzureSPRecoveryHint(err error, created *AzureCredentials) error {
 	if created == nil {

@@ -204,3 +204,139 @@ func TestAzureWizard_FailureAfterCreate_NoSecretInError(t *testing.T) {
 	plain := errors.New("plain")
 	assert.Same(t, plain, withAzureSPRecoveryHint(plain, nil))
 }
+
+// wizardCreateSPInput drives configureAzure through the wizard: skip az login,
+// skip the subscription listing, enter the subscription, run Step 3.
+const wizardCreateSPInput = "s\ns\n" + testSubID + "\nr\n"
+
+// stubAzureSecretsStore replaces the AWS-facing store constructor, restoring
+// it on cleanup. It returns a pointer to the number of times it was called.
+func stubAzureSecretsStore(t *testing.T, store SecretsStore, err error) *int {
+	t.Helper()
+	orig := openAzureSecretsStoreFn
+	t.Cleanup(func() { openAzureSecretsStoreFn = orig })
+	calls := 0
+	openAzureSecretsStoreFn = func(_ context.Context) (SecretsStore, error) {
+		calls++
+		if err != nil {
+			return nil, err
+		}
+		return store, nil
+	}
+	return &calls
+}
+
+// stubCountingAzureSPConstructors is stubAzureSPConstructors plus counters for
+// the tenant lookup and provisioner construction.
+func stubCountingAzureSPConstructors(t *testing.T, p azureSPProvisioner) (tenantCalls, provCalls *int) {
+	t.Helper()
+	stubAzureSPConstructors(t, p)
+	var tc, pc int
+	resolveAzureTenantIDFn = func(_ context.Context, _ string) (string, error) {
+		tc++
+		return testTenantID, nil
+	}
+	newAzureSPProvisionerFn = func(_ string) (azureSPProvisioner, error) {
+		pc++
+		return p, nil
+	}
+	return &tc, &pc
+}
+
+func setAzureOptsForTest(t *testing.T, opts AzureConfigOptions) {
+	t.Helper()
+	orig := azureOpts
+	t.Cleanup(func() { azureOpts = orig })
+	azureOpts = opts
+}
+
+// TestConfigureAzure_AWSConfigFailure_BeforeSPCreation pins the ordering fix:
+// an AWS config/credentials failure must stop the command before any Azure
+// call, so no service principal is created and no recovery hint is needed.
+func TestConfigureAzure_AWSConfigFailure_BeforeSPCreation(t *testing.T) {
+	prov := newSecretTestProvisioner()
+	tenantCalls, provCalls := stubCountingAzureSPConstructors(t, prov)
+	storeCalls := stubAzureSecretsStore(t, nil, errors.New("failed to load AWS config: fake missing profile"))
+	setAzureOptsForTest(t, AzureConfigOptions{StackName: "my-cudly"})
+
+	var err error
+	out := captureAllOutput(t, func() {
+		err = configureAzure(context.Background(), bufio.NewReader(strings.NewReader(wizardCreateSPInput)))
+	})
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "failed to load AWS config")
+	assert.Equal(t, 1, *storeCalls)
+	assert.Zero(t, *tenantCalls, "tenant must not be resolved before AWS config loads")
+	assert.Zero(t, *provCalls, "Graph provisioner must not be built before AWS config loads")
+	assert.Empty(t, prov.createAppName, "no application may be created")
+	assert.Empty(t, prov.addPasswordObjID, "no secret may be minted")
+	assert.NotContains(t, err.Error(), "az ad app credential reset", "nothing was created, so no recovery hint")
+	assert.NotContains(t, out, "Step 1", "the wizard must not start")
+}
+
+// TestConfigureAzure_StoreFailureAfterCreate_HasRecoveryHint pins the wiring
+// of withAzureSPRecoveryHint in configureAzure: a store failure after the SP
+// was created must name the appId and the reset command, never the secret.
+func TestConfigureAzure_StoreFailureAfterCreate_HasRecoveryHint(t *testing.T) {
+	prov := newSecretTestProvisioner()
+	stubCountingAzureSPConstructors(t, prov)
+	store := NewMockSecretsStore()
+	store.updateSecretFunc = func(_ context.Context, _, _ string) error {
+		return errors.New("AccessDeniedException: fake denial")
+	}
+	stubAzureSecretsStore(t, store, nil)
+	setAzureOptsForTest(t, AzureConfigOptions{StackName: "my-cudly"})
+
+	var err error
+	out := captureAllOutput(t, func() {
+		err = configureAzure(context.Background(), bufio.NewReader(strings.NewReader(wizardCreateSPInput)))
+	})
+
+	require.Error(t, err)
+	require.Equal(t, azureSPName, prov.createAppName, "the SP must have been created for this scenario")
+	assert.ErrorContains(t, err, "failed to store credentials in Secrets Manager")
+	assert.ErrorContains(t, err, "AccessDeniedException: fake denial")
+	assert.ErrorContains(t, err, "appId "+testSPAppID)
+	assert.ErrorContains(t, err, "az ad app credential reset --id "+testSPAppID)
+	assertSecretNotLeaked(t, out+err.Error())
+}
+
+// TestConfigureAzure_CreateAndStore_EndToEnd drives the whole command with
+// mocks: the created SP's credentials are stored and never printed.
+func TestConfigureAzure_CreateAndStore_EndToEnd(t *testing.T) {
+	prov := newSecretTestProvisioner()
+	stubCountingAzureSPConstructors(t, prov)
+	store := NewMockSecretsStore()
+	stubAzureSecretsStore(t, store, nil)
+	setAzureOptsForTest(t, AzureConfigOptions{StackName: "my-cudly"})
+
+	var err error
+	out := captureAllOutput(t, func() {
+		err = configureAzure(context.Background(), bufio.NewReader(strings.NewReader(wizardCreateSPInput)))
+	})
+
+	require.NoError(t, err)
+	assertSecretNotLeaked(t, out)
+	var got AzureCredentials
+	require.NoError(t, json.Unmarshal([]byte(store.updatedSecrets["my-cudly-AzureCredentials"]), &got))
+	assert.Equal(t, testSPAppID, got.ClientID)
+	assert.Equal(t, testSPSecret, got.ClientSecret)
+	assert.Equal(t, testSubID, got.SubscriptionID)
+}
+
+// TestCollectAzureCredentials_PromptWording checks that the manual-entry
+// prompt does not refer to Service Principal output that was never shown.
+func TestCollectAzureCredentials_PromptWording(t *testing.T) {
+	setAzureOptsForTest(t, AzureConfigOptions{StackName: "my-cudly", ClientSecret: "placeholder"})
+
+	var err error
+	out := captureAllOutput(t, func() {
+		_, err = collectAzureCredentials(bufio.NewReader(strings.NewReader(
+			testTenantID+"\n"+testSPAppID+"\n"+testSubID+"\n")), nil)
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, out, "Enter the credentials of an existing Azure Service Principal:")
+	assert.NotContains(t, out, "output above")
+}
