@@ -174,3 +174,42 @@ func TestPurchaseFailureError(t *testing.T) {
 	require.ErrorIs(t, err, errPurchasesFailed)
 	assert.Contains(t, err.Error(), "2 of 3")
 }
+
+// riHint is the RI-propagation hint; it applies only when an RI was bought.
+const riHint = "Allow up to 15 minutes for RIs to appear"
+
+func TestPrintMultiServiceSummary_RIHintOnlyAfterRISuccess(t *testing.T) {
+	ri := ServiceProcessingStats{Service: common.ServiceEC2, RecommendationsSelected: 1, SuccessfulPurchases: 1}
+	riFailed := ServiceProcessingStats{Service: common.ServiceEC2, RecommendationsSelected: 1, FailedPurchases: 1}
+	sp := ServiceProcessingStats{Service: common.ServiceSavingsPlansCompute, RecommendationsSelected: 1, SuccessfulPurchases: 1}
+	tests := []struct {
+		name     string
+		stats    map[common.ServiceType]ServiceProcessingStats
+		isDryRun bool
+		wantHint bool
+	}{
+		{"savings plan only", map[common.ServiceType]ServiceProcessingStats{common.ServiceSavingsPlansCompute: sp}, false, false},
+		{"savings plan success with failed RI", map[common.ServiceType]ServiceProcessingStats{common.ServiceSavingsPlansCompute: sp, common.ServiceEC2: riFailed}, false, false},
+		{"RI only", map[common.ServiceType]ServiceProcessingStats{common.ServiceEC2: ri}, false, true},
+		{"RI and savings plan", map[common.ServiceType]ServiceProcessingStats{common.ServiceSavingsPlansCompute: sp, common.ServiceEC2: ri}, false, true},
+		{"dry run", map[common.ServiceType]ServiceProcessingStats{common.ServiceEC2: ri}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := captureAppOutput(t, func() {
+				printMultiServiceSummary(nil, nil, tt.stats, tt.isDryRun)
+			})
+			if tt.wantHint {
+				assert.Contains(t, output, riHint)
+			} else {
+				assert.NotContains(t, output, riHint)
+			}
+			if tt.isDryRun {
+				assert.Contains(t, output, "run with --purchase flag")
+				assert.NotContains(t, output, "Purchase operations completed")
+			} else {
+				assert.Contains(t, output, "Purchase operations completed")
+			}
+		})
+	}
+}
