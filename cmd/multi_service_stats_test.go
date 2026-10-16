@@ -559,7 +559,7 @@ func TestPrintFinalMessage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			output := captureAppOutput(t, func() {
-				printFinalMessage(tt.isDryRun, tt.riSuccess)
+				printFinalMessage(tt.isDryRun, tt.riSuccess, 0)
 			})
 
 			for _, want := range tt.wantOutput {

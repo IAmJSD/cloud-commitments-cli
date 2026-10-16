@@ -1,8 +1,34 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/common"
 )
+
+// errPurchasesFailed marks a real purchase run in which at least one
+// purchase failed. The run exits non-zero so a scripted caller can detect a
+// partial or total failure (#2157).
+var errPurchasesFailed = errors.New("purchases failed")
+
+// purchaseFailureError returns errPurchasesFailed, with counts, when a real
+// run has any failed result. Dry runs buy nothing, so they never fail here.
+func purchaseFailureError(results []common.PurchaseResult, isDryRun bool) error {
+	if isDryRun {
+		return nil
+	}
+	failed := 0
+	for i := range results {
+		if !results[i].Success {
+			failed++
+		}
+	}
+	if failed == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %d of %d purchase(s) failed", errPurchasesFailed, failed, len(results))
+}
 
 // ServiceProcessingStats holds statistics for each service.
 type ServiceProcessingStats struct {
@@ -73,8 +99,11 @@ func printMultiServiceSummary(allRecommendations []common.Recommendation, allRes
 		printComparisonSection(allRecommendations, riStats, riAggregates.savings)
 	}
 
-	printSuccessRate(riAggregates.success, riAggregates.failed)
-	printFinalMessage(isDryRun, riAggregates.success)
+	// Savings Plan results count alongside RI results (#2157).
+	success := riAggregates.success + spStats.SuccessfulPurchases
+	failed := riAggregates.failed + spStats.FailedPurchases
+	printSuccessRate(success, failed)
+	printFinalMessage(isDryRun, success, failed)
 }
 
 // riAggregateStats holds aggregated RI statistics.
@@ -165,7 +194,8 @@ func printSuccessRate(success, failed int) {
 	totalResults := success + failed
 	if totalResults > 0 {
 		successRate := (float64(success) / float64(totalResults)) * 100
-		AppLogger.Printf("\nOverall success rate: %.1f%%\n", successRate)
+		AppLogger.Printf("\nPurchases: %d succeeded, %d failed\n", success, failed)
+		AppLogger.Printf("Overall success rate: %.1f%%\n", successRate)
 	}
 }
 
@@ -178,10 +208,16 @@ func printSuccessRate(success, failed int) {
 const archeraSignupURL = common.ArcheraSignupURL
 
 // printFinalMessage prints the final message based on mode and results.
-func printFinalMessage(isDryRun bool, riSuccess int) {
+// success and failed cover both Reserved Instances and Savings Plans.
+func printFinalMessage(isDryRun bool, success, failed int) {
 	if isDryRun {
 		AppLogger.Println("\n💡 To actually purchase these commitments, run with --purchase flag")
-	} else if riSuccess > 0 {
+		return
+	}
+	if failed > 0 {
+		AppLogger.Printf("\n⚠️  %d of %d purchase(s) failed; see the per-purchase errors above\n", failed, success+failed)
+	}
+	if success > 0 {
 		AppLogger.Println("\n🎉 Purchase operations completed!")
 		AppLogger.Println("⏰ Allow up to 15 minutes for RIs to appear in your account")
 		printArcheraPitch()

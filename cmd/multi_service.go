@@ -266,7 +266,7 @@ func executeAndReport(ctx context.Context, awsCfg aws.Config, passed []common.Re
 	if auditErr != nil {
 		AppLogger.Print(auditStopMessage(len(allResults), len(passed), allResults, auditErr))
 	}
-	return auditErr
+	return errors.Join(auditErr, purchaseFailureError(allResults, isDryRun))
 }
 
 // confirmPurchaseRun asks for confirmation once against the full
@@ -762,7 +762,7 @@ func runToolFromCSV(ctx context.Context, cfg Config) error {
 
 // runCSVPurchases groups the confirmed CSV rows by service and region, buys
 // them, and writes the report and summary for whatever ran. A non-nil error
-// is errAuditTrailLost.
+// is errAuditTrailLost and/or errPurchasesFailed.
 func runCSVPurchases(ctx context.Context, awsCfg aws.Config, recs []common.Recommendation, isDryRun bool, cfg Config, runID string) error {
 	// Create account alias cache for lookup
 	accountCache := NewAccountAliasCache(awsCfg)
@@ -827,7 +827,7 @@ func runCSVPurchases(ctx context.Context, awsCfg aws.Config, recs []common.Recom
 	if auditErr != nil {
 		AppLogger.Print(auditStopMessage(len(allResults), len(recs), allResults, auditErr))
 	}
-	return auditErr
+	return errors.Join(auditErr, purchaseFailureError(allResults, isDryRun))
 }
 
 // processCSVRegionPurchases handles a single (service, region) pair within
