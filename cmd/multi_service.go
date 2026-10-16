@@ -592,11 +592,22 @@ func probeAuditLog(isDryRun bool, auditLogPath string) error {
 	return nil
 }
 
+// newServiceClient is the service-client factory used by purchaseSingleRec.
+// It is a seam so tests can drive the real purchase path with a fake provider.
+var newServiceClient = createServiceClient
+
+// purchaseSucceeded reports whether a purchase result is a success: the
+// provider set Success AND reported no error. A provider may return
+// Success=true with a non-nil Error; that is a failure (issue #1900).
+func purchaseSucceeded(result common.PurchaseResult) bool {
+	return result.Success && result.Error == nil
+}
+
 // purchaseAuditStatus derives the audit status for a completed (non-dry-run)
 // purchase attempt. Callers handle the dry-run ("skipped") case separately,
 // since that never reaches a PurchaseResult from an actual API call.
 func purchaseAuditStatus(result common.PurchaseResult) string {
-	if result.Success {
+	if purchaseSucceeded(result) {
 		return "success"
 	}
 	return "error"
@@ -623,7 +634,7 @@ func purchaseSingleRec(ctx context.Context, awsCfg aws.Config, rec common.Recomm
 	}
 	regionalCfg := awsCfg.Copy()
 	regionalCfg.Region = clientRegion
-	serviceClient := createServiceClient(rec.Service, regionalCfg)
+	serviceClient := newServiceClient(rec.Service, regionalCfg)
 	if serviceClient == nil {
 		AppLogger.Printf("    ⚠️  No service client for %s\n", rec.Service)
 		return common.PurchaseResult{Success: false}, "error"
@@ -631,7 +642,7 @@ func purchaseSingleRec(ctx context.Context, awsCfg aws.Config, rec common.Recomm
 
 	result := executePurchase(ctx, rec, label, index, serviceClient, cfg)
 	status := purchaseAuditStatus(result)
-	if result.Success {
+	if purchaseSucceeded(result) {
 		AppLogger.Printf("    ✅ %s\n", result.CommitmentID)
 	} else {
 		AppLogger.Printf("    ❌ %v\n", result.Error)
@@ -1040,7 +1051,7 @@ func runOnePurchase(ctx context.Context, rec common.Recommendation, label, regio
 }
 
 func logPurchaseOutcome(result common.PurchaseResult) {
-	if result.Success {
+	if purchaseSucceeded(result) {
 		AppLogger.Printf("    ✅ Success: %s\n", result.CommitmentID)
 		return
 	}
