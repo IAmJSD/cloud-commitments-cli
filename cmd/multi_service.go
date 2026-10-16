@@ -288,11 +288,7 @@ func confirmPurchaseRun(recs []common.Recommendation, isDryRun bool) bool {
 func writeReportAndSummary(passed []common.Recommendation, allResults []common.PurchaseResult, isDryRun bool, cfg Config, drops *common.DropSummary) {
 	serviceStats := buildServiceStats(passed, allResults)
 	finalCSVOutput := generateCSVFilename(isDryRun, cfg)
-	if err := writeMultiServiceCSVReport(allResults, finalCSVOutput); err != nil {
-		log.Printf("Warning: Failed to write CSV output: %v", err)
-	} else {
-		AppLogger.Printf("\n📋 CSV report written to: %s\n", finalCSVOutput)
-	}
+	writeCSVReport(allResults, finalCSVOutput)
 	printDropSummary(drops)
 	printMultiServiceSummary(passed, allResults, serviceStats, isDryRun)
 }
@@ -812,11 +808,7 @@ func runCSVPurchases(ctx context.Context, awsCfg aws.Config, recs []common.Recom
 	finalCSVOutput := generateCSVFilename(isDryRun, cfg)
 
 	// Write CSV report
-	if err := writeMultiServiceCSVReport(allResults, finalCSVOutput); err != nil {
-		log.Printf("Warning: Failed to write CSV output: %v", err)
-	} else {
-		AppLogger.Printf("\n📋 CSV report written to: %s\n", finalCSVOutput)
-	}
+	writeCSVReport(allResults, finalCSVOutput)
 
 	// Print final summary using the post-dedup slice so counts match what was
 	// actually processed, not the pre-dedup input passed into the outer loop.

@@ -254,8 +254,24 @@ func parseCSVFloat(record []string, colIdx map[string]int, fieldName string, tar
 	return nil
 }
 
-// writeMultiServiceCSVReport writes purchase results to a CSV file.
-func writeMultiServiceCSVReport(results []common.PurchaseResult, filepath string) error {
+// writeCSVReport writes the purchase report and tells the operator whether a
+// file exists: "written to" is printed only after a complete, flushed and
+// closed write. A run with no results writes no file, so it says so instead.
+func writeCSVReport(results []common.PurchaseResult, path string) {
+	if len(results) == 0 {
+		AppLogger.Printf("\n📋 No purchase results; CSV report not written.\n")
+		return
+	}
+	if err := writeMultiServiceCSVReport(results, path); err != nil {
+		log.Printf("Warning: Failed to write CSV output: %v", err)
+		return
+	}
+	AppLogger.Printf("\n📋 CSV report written to: %s\n", path)
+}
+
+// writeMultiServiceCSVReport writes purchase results to a CSV file. It is a
+// no-op returning nil when results is empty (no file is created).
+func writeMultiServiceCSVReport(results []common.PurchaseResult, filepath string) (err error) {
 	if len(results) == 0 {
 		return nil
 	}
@@ -265,13 +281,20 @@ func writeMultiServiceCSVReport(results []common.PurchaseResult, filepath string
 		return fmt.Errorf("failed to create CSV file: %w", err)
 	}
 	defer func() {
-		if err := file.Close(); err != nil {
-			log.Printf("Warning: failed to close CSV file %s: %v", filepath, err)
+		// A failed close can mean the data never reached the disk (e.g. on
+		// a network mount), so it fails the write rather than a warning.
+		if cerr := file.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("failed to close CSV file: %w", cerr)
 		}
 	}()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+	return writeMultiServiceCSV(file, results)
+}
+
+// writeMultiServiceCSV renders the purchase report to w, flushing before it
+// returns so a failed flush is returned rather than lost in a defer.
+func writeMultiServiceCSV(w io.Writer, results []common.PurchaseResult) error {
+	writer := csv.NewWriter(w)
 
 	// Write header. RecommendedCount shows AWS's pre-sizing count alongside
 	// Count (the post-sizing value); UpfrontPayment is rec.CommitmentCost,
@@ -364,6 +387,10 @@ func writeMultiServiceCSVReport(results []common.PurchaseResult, filepath string
 		}
 	}
 
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return fmt.Errorf("failed to flush CSV file: %w", err)
+	}
 	return nil
 }
 
