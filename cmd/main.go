@@ -77,6 +77,12 @@ type Config struct {
 	IncludeExtendedSupport bool
 	AllServices            bool
 	ActualPurchase         bool
+	// CoverageFromDefault is true when --coverage was not passed on the
+	// command line, so Coverage holds the flag's default. runTool sets it
+	// from cobra's Changed(); --input-csv runs use it to buy each row's full
+	// Count when no coverage was asked for (determineCSVCoverage). A Config
+	// built in code leaves it false, so its Coverage is always honored.
+	CoverageFromDefault bool
 	// RecLookbackPeriod controls the LookbackPeriodInDays passed to
 	// GetReservationPurchaseRecommendation. Valid values: "7d", "30d", "60d"
 	// (recommendations.DefaultRecLookbackPeriod is the shared default).
@@ -391,8 +397,11 @@ func runTool(cmd *cobra.Command, args []string) {
 	ctx, stop := invocationContext()
 	defer stop()
 
+	cfg := toolCfg
+	cfg.CoverageFromDefault = cmd == nil || !cmd.Flags().Changed("coverage")
+
 	// Always use the multi-service implementation
-	runToolMultiService(ctx, toolCfg)
+	runToolMultiService(ctx, cfg)
 }
 
 // invocationContext returns the context for one CLI invocation, canceled by
