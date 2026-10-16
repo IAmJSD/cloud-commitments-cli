@@ -286,6 +286,25 @@ func TestValidatePurchasePreconditions(t *testing.T) {
 	}
 }
 
+// TestValidatePurchasePreconditions_RejectsCommitmentThatRoundsToZero covers
+// issue #2163: the library sends the hourly commitment as "%.2f", so a positive
+// value below 0.005 would reach CreateSavingsPlan as "0.00".
+func TestValidatePurchasePreconditions_RejectsCommitmentThatRoundsToZero(t *testing.T) {
+	withCommitment := func(c float64) common.Recommendation {
+		rec := parserShapedSP()
+		rec.Details = &common.SavingsPlanDetails{PlanType: "Compute", HourlyCommitment: c}
+		return rec
+	}
+	for _, c := range []float64{0.001, 0.004, 0.00499} {
+		err := validatePurchasePreconditions(withCommitment(c), "", defaultTestAccount)
+		require.Error(t, err, "commitment %v rounds to 0.00 and must be rejected", c)
+		assert.Contains(t, err.Error(), "0.00", "commitment %v", c)
+	}
+	for _, c := range []float64{0.005, 0.01, 1.5} {
+		assert.NoError(t, validatePurchasePreconditions(withCommitment(c), "", defaultTestAccount), "commitment %v", c)
+	}
+}
+
 func TestPurchaseSingleRec_DryRunReportsPreconditionFailure(t *testing.T) {
 	cfg := Config{CallerAccountID: defaultTestAccount, AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")}
 	broken := parserShapedSP()
