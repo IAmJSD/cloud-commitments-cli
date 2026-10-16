@@ -420,6 +420,9 @@ func extractNumericPrefix(s string) string {
 // lookup: known is false when the major version cannot be extracted or the
 // engine:majorVersion key is missing from versionInfo. Callers on money paths
 // must not treat known=false as "not in extended support" (issue #1313).
+// An extended-support entry with no start date is an anomalous payload: it is
+// skipped with a warning rather than read as "already started", and if no
+// other entry proves extended support is active, known is false (issue #1315).
 func isInExtendedSupport(engine, fullVersion string, versionInfo map[string]MajorEngineVersionInfo) (extended, known bool) {
 	majorVersion := extractMajorVersion(engine, fullVersion)
 	if majorVersion == "" {
@@ -439,8 +442,17 @@ func isInExtendedSupport(engine, fullVersion string, versionInfo map[string]Majo
 
 	// Check if current date falls within extended support period
 	now := time.Now()
+	missingStart := false
 	for _, lifecycle := range info.SupportedEngineLifecycles {
 		if lifecycle.LifecycleSupportName != string(rdstypes.LifecycleSupportNameOpenSourceRdsExtendedSupport) {
+			continue
+		}
+		// A zero start date would pass the start gate below and claim the
+		// window is open with no evidence; skip it loudly (issue #1315).
+		if lifecycle.LifecycleSupportStartDate.IsZero() {
+			missingStart = true
+			log.Printf("⚠️  Extended-support lifecycle for %s %s has no start date: ignoring the entry, extended-support window unknown",
+				normalizedEngine, majorVersion)
 			continue
 		}
 		// Not in extended support before its start date
@@ -454,7 +466,7 @@ func isInExtendedSupport(engine, fullVersion string, versionInfo map[string]Majo
 		}
 	}
 
-	return false, true
+	return false, !missingStart
 }
 
 // adjustRecommendationForExcludedVersions reduces the instance count in a recommendation
