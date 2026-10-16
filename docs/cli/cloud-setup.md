@@ -46,6 +46,8 @@ When `--skip-setup` is not set, the command runs an interactive guided flow:
 
 After the guided steps (or immediately with `--skip-setup`), the command prompts for or accepts any missing credential fields and writes them as JSON to the `<stack-name>-AzureCredentials` secret.
 
+If step 3 creates the Service Principal, its credentials (including the subscription chosen in step 2) are written straight to the secret without prompting, and any credential flags are ignored. The client secret is never printed: the command shows only the appId, tenant ID and subscription ID, and names the secret it is stored in. If storing fails after the Service Principal was created, generate a new secret with `az ad app credential reset --id <appId>` and re-run with `--skip-setup`.
+
 ### Non-interactive usage
 
 ```bash

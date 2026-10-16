@@ -176,19 +176,23 @@ func runConfigureAzure(cmd *cobra.Command, args []string) error {
 	fmt.Println("========================================================")
 	fmt.Println()
 
-	// Run Azure CLI setup if not skipped
+	// Run Azure CLI setup if not skipped. When the wizard creates a service
+	// principal, its credentials are carried straight into the store step so
+	// the client secret never round-trips through the terminal.
+	var created *AzureCredentials
 	if !azureOpts.SkipSetup {
-		if err := runAzureSetupCommands(ctx, reader); err != nil {
+		var err error
+		if created, err = runAzureSetupCommands(ctx, reader); err != nil {
 			return err
 		}
 	}
 
 	cfg, err := loadAWSConfigForAzure(ctx)
 	if err != nil {
-		return err
+		return withAzureSPRecoveryHint(err, created)
 	}
 
-	creds, err := collectAzureCredentials(reader)
+	creds, err := collectAzureCredentials(reader, created)
 	if err != nil {
 		return err
 	}
@@ -197,12 +201,15 @@ func runConfigureAzure(cmd *cobra.Command, args []string) error {
 	store := NewAWSSecretsStore(smClient)
 
 	if err := storeAzureCredentials(ctx, store, azureOpts.StackName, creds); err != nil {
-		return err
+		return withAzureSPRecoveryHint(err, created)
 	}
 
 	// Zero out sensitive data from memory
 	azureOpts.ClientSecret = ""
 	creds.ClientSecret = ""
+	if created != nil {
+		created.ClientSecret = ""
+	}
 
 	log.Printf("Azure credentials stored successfully in Secrets Manager")
 	fmt.Println("\nAzure configuration complete!")
@@ -227,7 +234,15 @@ func loadAWSConfigForAzure(ctx context.Context) (aws.Config, error) {
 }
 
 // collectAzureCredentials collects Azure credentials interactively or from flags.
-func collectAzureCredentials(reader *bufio.Reader) (AzureCredentials, error) {
+// When created is non-nil (the wizard just created a service principal), its
+// credentials are used as-is and nothing is prompted: the freshly generated
+// client secret is never displayed, so the operator could not retype it anyway.
+func collectAzureCredentials(reader *bufio.Reader, created *AzureCredentials) (AzureCredentials, error) {
+	if created != nil {
+		fmt.Println("\nUsing the service principal created in Step 3.")
+		return *created, nil
+	}
+
 	creds := AzureCredentials{
 		TenantID:       azureOpts.TenantID,
 		ClientID:       azureOpts.ClientID,
@@ -369,14 +384,17 @@ func listAzureSubscriptions(ctx context.Context) error {
 // (resolve the "Reservations Administrator" role definition and assign it at
 // subscription scope). This is the create-for-rbac equivalent and fails loud
 // on any SDK error.
-func runAzureSetupCommands(ctx context.Context, reader *bufio.Reader) error {
+//
+// It returns the created service principal's credentials (nil when Step 3 was
+// skipped) so the caller can store them without echoing the secret.
+func runAzureSetupCommands(ctx context.Context, reader *bufio.Reader) (*AzureCredentials, error) {
 	if err := azureStepLogin(reader); err != nil {
-		return err
+		return nil, err
 	}
 
 	subscriptionID, err := azureStepListSubscriptions(ctx, reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return azureStepCreateServicePrincipal(ctx, reader, subscriptionID)
@@ -459,11 +477,22 @@ func resolveAzureTenantID(ctx context.Context, subscriptionID string) (string, e
 	return *resp.TenantID, nil
 }
 
+// resolveAzureTenantIDFn and newAzureSPProvisionerFn are the cloud-facing
+// constructors used by azureStepCreateServicePrincipal. They are variables so
+// unit tests can substitute fakes and never reach Azure.
+var (
+	resolveAzureTenantIDFn  = resolveAzureTenantID
+	newAzureSPProvisionerFn = func(subscriptionID string) (azureSPProvisioner, error) {
+		return newGraphSPProvisioner(subscriptionID)
+	}
+)
+
 // azureStepCreateServicePrincipal creates the service principal via the
 // Microsoft Graph + armauthorization SDKs (the create-for-rbac equivalent) and
-// prints the resulting credential material. It fails loud: any SDK error is
+// returns its credentials for direct storage (nil when the operator skips the
+// step). The client secret is never printed. It fails loud: any SDK error is
 // returned rather than silently falling back to the CLI.
-func azureStepCreateServicePrincipal(ctx context.Context, reader *bufio.Reader, subscriptionID string) error {
+func azureStepCreateServicePrincipal(ctx context.Context, reader *bufio.Reader, subscriptionID string) (*AzureCredentials, error) {
 	fmt.Println()
 	fmt.Println("Step 3: Create Service Principal")
 	fmt.Println("---------------------------------")
@@ -475,7 +504,7 @@ func azureStepCreateServicePrincipal(ctx context.Context, reader *bufio.Reader, 
 
 	choice, err := readTrimmedLine(reader)
 	if err != nil {
-		return fmt.Errorf("failed to read service-principal choice: %w", err)
+		return nil, fmt.Errorf("failed to read service-principal choice: %w", err)
 	}
 	choice = strings.ToLower(choice)
 	if choice != "r" && choice != "run" && choice != "" {
@@ -484,7 +513,7 @@ func azureStepCreateServicePrincipal(ctx context.Context, reader *bufio.Reader, 
 		fmt.Println("Provide the appId, client secret and tenant ID for an existing")
 		fmt.Println("service principal in the next step.")
 		fmt.Println()
-		return nil
+		return nil, nil
 	}
 
 	// The step budget must exceed roleAssignRetryBudget (3 min) plus the
@@ -497,14 +526,14 @@ func azureStepCreateServicePrincipal(ctx context.Context, reader *bufio.Reader, 
 	spCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
 	defer cancel()
 
-	tenantID, err := resolveAzureTenantID(spCtx, subscriptionID)
+	tenantID, err := resolveAzureTenantIDFn(spCtx, subscriptionID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	provisioner, err := newGraphSPProvisioner(subscriptionID)
+	provisioner, err := newAzureSPProvisionerFn(subscriptionID)
 	if err != nil {
-		return fmt.Errorf("failed to initialize Azure SDK clients: %w\n"+
+		return nil, fmt.Errorf("failed to initialize Azure SDK clients: %w\n"+
 			"Ensure you are authenticated: run 'az login' (Step 1) before continuing", err)
 	}
 
@@ -512,32 +541,50 @@ func azureStepCreateServicePrincipal(ctx context.Context, reader *bufio.Reader, 
 	fmt.Println(strings.Repeat("-", 60))
 	result, err := createAzureServicePrincipal(spCtx, provisioner, subscriptionID, tenantID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Println(strings.Repeat("-", 60))
 
-	printAzureSPResult(result, subscriptionID)
-	return nil
+	printAzureSPResult(result, subscriptionID, azureOpts.StackName)
+	return &AzureCredentials{
+		TenantID:       result.TenantID,
+		ClientID:       result.AppID,
+		ClientSecret:   result.ClientSecret,
+		SubscriptionID: subscriptionID,
+	}, nil
 }
 
-// printAzureSPResult prints the credential material in the same shape that
-// "az ad sp create-for-rbac" prints, so the operator can feed it into the
-// credential collection step that follows.
-func printAzureSPResult(result azureSPResult, subscriptionID string) {
+// printAzureSPResult prints the non-secret identifiers of the created service
+// principal. The client secret is deliberately NOT printed (not even
+// partially): stdout is routinely captured by script/tee, CI logs and terminal
+// scrollback, and the wizard hands the secret straight to the Secrets Manager
+// store step, so the operator never needs to see or retype it.
+func printAzureSPResult(result azureSPResult, subscriptionID, stackName string) {
 	fmt.Println()
-	fmt.Println("Service principal created. Credential material:")
+	fmt.Println("Service principal created:")
 	fmt.Println()
-	fmt.Printf("  appId (Client ID):       %s\n", result.AppID)
-	fmt.Printf("  password (Client Secret): %s\n", result.ClientSecret)
-	fmt.Printf("  tenant (Tenant ID):       %s\n", result.TenantID)
+	fmt.Printf("  appId (Client ID):        %s\n", result.AppID)
+	fmt.Println("  password (Client Secret): [hidden]")
+	fmt.Printf("  tenant (Tenant ID):        %s\n", result.TenantID)
+	fmt.Printf("  Subscription ID:           %s\n", subscriptionID)
 	fmt.Println()
-	fmt.Println("IMPORTANT: copy the client secret now -- it cannot be retrieved later.")
-	fmt.Println("You'll enter these values in the next step:")
-	fmt.Println("  - appId      -> Client ID")
-	fmt.Println("  - password   -> Client Secret")
-	fmt.Println("  - tenant     -> Tenant ID")
-	fmt.Printf("  - Subscription ID: %s\n", subscriptionID)
+	fmt.Printf("The client secret is not displayed. It will be stored directly in the\n")
+	fmt.Printf("AWS Secrets Manager secret %q (field client_secret).\n", stackName+"-AzureCredentials")
 	fmt.Println()
+}
+
+// withAzureSPRecoveryHint annotates a failure that happens after the wizard
+// created a service principal but before its secret was stored. The secret was
+// never displayed, so the operator is told how to mint a replacement instead.
+func withAzureSPRecoveryHint(err error, created *AzureCredentials) error {
+	if created == nil {
+		return err
+	}
+	return fmt.Errorf("%w\nThe service principal (appId %s) was created but its client secret was NOT stored "+
+		"and was never displayed. Fix the error above, then generate a new secret with "+
+		"'az ad app credential reset --id %s' and re-run 'cudly configure-azure --skip-setup', "+
+		"entering it at the hidden Client Secret prompt",
+		err, created.ClientID, created.ClientID)
 }
 
 // promptAndRunExplicitCommand shows a command and asks to run or skip.
