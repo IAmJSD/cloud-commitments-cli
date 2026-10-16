@@ -100,6 +100,9 @@ type csvPurchaseEnv struct {
 	denyHits *atomic.Int64
 	dir      string
 	run      func(report string) // buys the CSV rows against the stub, report written to the given name
+	// expectPurchaseFailure makes run require errPurchasesFailed (#2157):
+	// a real run with any failed purchase now returns it so the CLI exits non-zero.
+	expectPurchaseFailure bool
 }
 
 // newCSVPurchaseEnv wires the stub with the RDS and ElastiCache offering and
@@ -132,7 +135,12 @@ func newCSVPurchaseEnvFor(t *testing.T, csv string, fixtureSets ...map[string]aw
 		recs, err := loadRecommendationsFromCSV(csvPath)
 		require.NoError(t, err)
 		cfg := Config{CallerAccountID: defaultTestAccount, CSVOutput: filepath.Join(dir, report), AuditLog: filepath.Join(dir, "audit.jsonl")}
-		require.NoError(t, runCSVPurchases(context.Background(), awsCfg, recs, false, cfg, "run-"+report))
+		err = runCSVPurchases(context.Background(), awsCfg, recs, false, cfg, "run-"+report)
+		if env.expectPurchaseFailure {
+			require.ErrorIs(t, err, errPurchasesFailed)
+			return
+		}
+		require.NoError(t, err)
 	}
 	return env
 }
@@ -218,6 +226,7 @@ func TestCSVRealPurchase_RDSAndElastiCache(t *testing.T) {
 func TestCSVRealPurchase_FailedPurchaseCarriesError(t *testing.T) {
 	env := newCSVPurchaseEnv(t)
 	env.stub.fixtures["elasticache "+cachePurch] = queryErr("ReservedCacheNodeQuotaExceeded", "cache quota exceeded by fixture")
+	env.expectPurchaseFailure = true
 	env.run("report1.csv")
 
 	rep := env.report(t, "report1.csv")
