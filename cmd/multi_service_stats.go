@@ -103,7 +103,7 @@ func printMultiServiceSummary(allRecommendations []common.Recommendation, allRes
 	success := riAggregates.success + spStats.SuccessfulPurchases
 	failed := riAggregates.failed + spStats.FailedPurchases
 	printSuccessRate(success, failed)
-	printFinalMessage(isDryRun, success, failed)
+	printFinalMessage(isDryRun, riAggregates.success, success, failed)
 }
 
 // riAggregateStats holds aggregated RI statistics.
@@ -208,8 +208,9 @@ func printSuccessRate(success, failed int) {
 const archeraSignupURL = common.ArcheraSignupURL
 
 // printFinalMessage prints the final message based on mode and results.
-// success and failed cover both Reserved Instances and Savings Plans.
-func printFinalMessage(isDryRun bool, success, failed int) {
+// success and failed cover both Reserved Instances and Savings Plans;
+// riSuccess (the RI share of success) gates the RI-propagation hint.
+func printFinalMessage(isDryRun bool, riSuccess, success, failed int) {
 	if isDryRun {
 		AppLogger.Println("\n💡 To actually purchase these commitments, run with --purchase flag")
 		return
@@ -219,7 +220,9 @@ func printFinalMessage(isDryRun bool, success, failed int) {
 	}
 	if success > 0 {
 		AppLogger.Println("\n🎉 Purchase operations completed!")
-		AppLogger.Println("⏰ Allow up to 15 minutes for RIs to appear in your account")
+		if riSuccess > 0 {
+			AppLogger.Println("⏰ Allow up to 15 minutes for RIs to appear in your account")
+		}
 		printArcheraPitch()
 	}
 }
