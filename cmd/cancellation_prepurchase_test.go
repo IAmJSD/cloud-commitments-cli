@@ -11,6 +11,8 @@ import (
 	"github.com/LeanerCloud/cloud-commitments-go/pkg/common"
 	awsprovider "github.com/LeanerCloud/cloud-commitments-go/providers/aws"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/organizations"
+	orgtypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -321,6 +323,13 @@ func TestRequireResolvedAccountNames_CSVRows(t *testing.T) {
 	assert.False(t, shouldIncludeAccountIDOrName(testCallerAccount, "sandbox", &Config{ExcludeAccounts: []string{testCallerAccount}}), "an ID filter matches a named account")
 }
 
+func TestRequireNamesResolved_BlankFilterValueIsNotANameFilter(t *testing.T) {
+	unresolved := []common.Recommendation{{Account: testCallerAccount, AccountName: testCallerAccount}}
+
+	require.NoError(t, requireNamesResolved(unresolved, &Config{ExcludeAccounts: []string{" "}}))
+	require.Error(t, requireNamesResolved(unresolved, &Config{ExcludeAccounts: []string{" ", "sandbox"}}))
+}
+
 func TestFilterAndAdjustRecommendations_NameExcludeOnCSVRowsWithoutNamesFails(t *testing.T) {
 	captureAppLog(t)
 	rows := []common.Recommendation{{Service: common.ServiceRDS, Region: "us-east-1", Account: testCallerAccount, AccountName: testCallerAccount, ResourceType: "db.t3.small", Count: 2}}
@@ -329,4 +338,76 @@ func TestFilterAndAdjustRecommendations_NameExcludeOnCSVRowsWithoutNamesFails(t 
 
 	require.Error(t, err, "replay must not let an excluded account through because its name is missing")
 	assert.Empty(t, recs)
+}
+
+func TestFetchAllRecs_ExcludeAccountsExactInAnotherBatchIsNotAmbiguous(t *testing.T) {
+	captureAppLog(t)
+	rec := func(region, account string) common.Recommendation {
+		return common.Recommendation{Service: common.ServiceRDS, Region: region, ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10, Account: account}
+	}
+	client := &MockRecommendationsClient{}
+	// Region discovery sees both; each per-region batch sees only its own account.
+	usProd, euProd := rec("us-east-1", "123456789012"), rec("eu-central-2", "999888777666")
+	client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "" })).
+		Return([]common.Recommendation{usProd, euProd}, nil)
+	client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "us-east-1" })).
+		Return([]common.Recommendation{usProd}, nil)
+	client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "eu-central-2" })).
+		Return([]common.Recommendation{euProd}, nil)
+	org := &MockOrganizationsClient{}
+	for id, name := range map[string]string{"123456789012": "prod", "999888777666": "prod-eu"} {
+		org.On("DescribeAccount", mock.Anything, mock.MatchedBy(func(in *organizations.DescribeAccountInput) bool { return *in.AccountId == id })).
+			Return(&organizations.DescribeAccountOutput{Account: &orgtypes.Account{Name: aws.String(name)}}, nil)
+	}
+	cfg := Config{TermYears: 1, PaymentOption: "no-upfront", Coverage: 100, ExcludeAccounts: []string{"prod"}}
+
+	awsCfg, _ := newAWSFixtureConfig(t)
+	recs, _, err := fetchAllRecs(context.Background(), awsCfg, client, NewAccountAliasCacheWithClient(org), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+
+	require.NoError(t, err)
+	for i := range recs {
+		assert.NotEqual(t, "prod", recs[i].AccountName)
+	}
+}
+
+func TestFetchAllRecs_ExcludeAccountsPartialOnlyIsRefused(t *testing.T) {
+	captureAppLog(t)
+	rec := func(region, account string) common.Recommendation {
+		return common.Recommendation{Service: common.ServiceRDS, Region: region, ResourceType: "db.t3.small", Count: 3, EstimatedSavings: 10, SavingsPercentage: 10, Account: account}
+	}
+	usProd, euProd := rec("us-east-1", "123456789012"), rec("eu-central-2", "999888777666")
+	run := func(t *testing.T, exclude string) ([]common.Recommendation, error) {
+		t.Helper()
+		client := &MockRecommendationsClient{}
+		client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "" })).
+			Return([]common.Recommendation{usProd, euProd}, nil)
+		client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "us-east-1" })).
+			Return([]common.Recommendation{usProd}, nil)
+		client.On("GetRecommendations", mock.Anything, mock.MatchedBy(func(p *common.RecommendationParams) bool { return p.Region == "eu-central-2" })).
+			Return([]common.Recommendation{euProd}, nil)
+		org := &MockOrganizationsClient{}
+		for id, name := range map[string]string{"123456789012": "prod-us", "999888777666": "prod-eu"} {
+			org.On("DescribeAccount", mock.Anything, mock.MatchedBy(func(in *organizations.DescribeAccountInput) bool { return *in.AccountId == id })).
+				Return(&organizations.DescribeAccountOutput{Account: &orgtypes.Account{Name: aws.String(name)}}, nil)
+		}
+		cfg := Config{TermYears: 1, PaymentOption: "no-upfront", Coverage: 100, ExcludeAccounts: []string{exclude}}
+		awsCfg, _ := newAWSFixtureConfig(t)
+		recs, _, err := fetchAllRecs(context.Background(), awsCfg, client, NewAccountAliasCacheWithClient(org), []common.ServiceType{common.ServiceRDS}, engineVersionData{}, cfg, nil)
+		return recs, err
+	}
+
+	t.Run("a substring matching no account exactly is refused", func(t *testing.T) {
+		recs, err := run(t, "prod")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "matches no account exactly")
+		assert.Contains(t, err.Error(), "prod-us")
+		assert.Contains(t, err.Error(), "prod-eu")
+		assert.Empty(t, recs)
+	})
+	t.Run("an exact name in another case excludes only that account", func(t *testing.T) {
+		recs, err := run(t, "PROD-US")
+		require.NoError(t, err)
+		require.Len(t, recs, 1)
+		assert.Equal(t, "prod-eu", recs[0].AccountName)
+	})
 }
