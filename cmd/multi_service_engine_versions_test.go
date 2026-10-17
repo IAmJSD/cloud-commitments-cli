@@ -746,6 +746,91 @@ func TestIsInExtendedSupport(t *testing.T) {
 			expectedKnown: true,
 		},
 		{
+			// Issue #1315: both dates absent must not read as "in extended support".
+			name:    "Zero start and zero end date - unknown, not silently true",
+			engine:  "mysql",
+			version: "5.7.44",
+			versionInfo: map[string]MajorEngineVersionInfo{
+				"mysql:5.7": {
+					Engine:             "mysql",
+					MajorEngineVersion: "5.7",
+					SupportedEngineLifecycles: []EngineLifecycleInfo{
+						{
+							LifecycleSupportName: string(rdstypes.LifecycleSupportNameOpenSourceRdsExtendedSupport),
+						},
+					},
+				},
+			},
+			expected:      false,
+			expectedKnown: false,
+		},
+		{
+			// Issue #1315: a missing start date is skipped even with a future end date.
+			name:    "Zero start date with future end date - unknown, not silently true",
+			engine:  "mysql",
+			version: "5.7.44",
+			versionInfo: map[string]MajorEngineVersionInfo{
+				"mysql:5.7": {
+					Engine:             "mysql",
+					MajorEngineVersion: "5.7",
+					SupportedEngineLifecycles: []EngineLifecycleInfo{
+						{
+							LifecycleSupportName:    string(rdstypes.LifecycleSupportNameOpenSourceRdsExtendedSupport),
+							LifecycleSupportEndDate: futureDate,
+						},
+					},
+				},
+			},
+			expected:      false,
+			expectedKnown: false,
+		},
+		{
+			// A well-formed active entry still proves extended support even
+			// when another extended entry is missing its start date.
+			name:    "Zero start entry alongside a valid active entry",
+			engine:  "mysql",
+			version: "5.7.44",
+			versionInfo: map[string]MajorEngineVersionInfo{
+				"mysql:5.7": {
+					Engine:             "mysql",
+					MajorEngineVersion: "5.7",
+					SupportedEngineLifecycles: []EngineLifecycleInfo{
+						{
+							LifecycleSupportName:    string(rdstypes.LifecycleSupportNameOpenSourceRdsExtendedSupport),
+							LifecycleSupportEndDate: futureDate,
+						},
+						{
+							LifecycleSupportName:      string(rdstypes.LifecycleSupportNameOpenSourceRdsExtendedSupport),
+							LifecycleSupportStartDate: pastDate,
+							LifecycleSupportEndDate:   futureDate,
+						},
+					},
+				},
+			},
+			expected:      true,
+			expectedKnown: true,
+		},
+		{
+			// A zero start date on a non-extended entry is irrelevant.
+			name:    "Zero start date on standard support entry is ignored",
+			engine:  "mysql",
+			version: "8.0.35",
+			versionInfo: map[string]MajorEngineVersionInfo{
+				"mysql:8.0": {
+					Engine:             "mysql",
+					MajorEngineVersion: "8.0",
+					SupportedEngineLifecycles: []EngineLifecycleInfo{
+						{
+							LifecycleSupportName:    string(rdstypes.LifecycleSupportNameOpenSourceRdsStandardSupport),
+							LifecycleSupportEndDate: futureDate,
+						},
+					},
+				},
+			},
+			expected:      false,
+			expectedKnown: true,
+		},
+		{
 			name:    "Engine name normalization with spaces",
 			engine:  "Aurora MySQL",
 			version: "5.7.mysql_aurora.2.11.1",
@@ -774,6 +859,53 @@ func TestIsInExtendedSupport(t *testing.T) {
 			assert.Equal(t, tt.expectedKnown, known, "known flag mismatch")
 		})
 	}
+}
+
+// TestIsInExtendedSupport_ZeroStartDateWarns covers issue #1315: an
+// extended-support entry with no start date is logged with the engine and
+// major version, and the instance stays in the recommendation count.
+func TestIsInExtendedSupport_ZeroStartDateWarns(t *testing.T) {
+	versionInfo := map[string]MajorEngineVersionInfo{
+		"mysql:5.7": {
+			Engine:             "mysql",
+			MajorEngineVersion: "5.7",
+			SupportedEngineLifecycles: []EngineLifecycleInfo{
+				{
+					LifecycleSupportName:    string(rdstypes.LifecycleSupportNameOpenSourceRdsExtendedSupport),
+					LifecycleSupportEndDate: time.Now().AddDate(1, 0, 0),
+				},
+			},
+		},
+	}
+	recommendation := common.Recommendation{
+		Service:      common.ServiceRDS,
+		Region:       "us-east-1",
+		ResourceType: "db.r5.large",
+		Count:        2,
+		Details:      &common.DatabaseDetails{Engine: "MySQL"},
+	}
+	instanceVersions := map[string][]InstanceEngineVersion{
+		"db.r5.large": {
+			{Engine: "mysql", EngineVersion: "5.7.44", InstanceClass: "db.r5.large", Region: "us-east-1"},
+		},
+	}
+
+	var logBuf bytes.Buffer
+	origOutput := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(origOutput)
+		log.SetFlags(origFlags)
+	}()
+
+	result := adjustRecommendationForExcludedVersions(recommendation, instanceVersions, versionInfo)
+
+	assert.Equal(t, 2, result.Count, "missing start date must not exclude the instance")
+	logged := logBuf.String()
+	assert.Contains(t, logged, "mysql 5.7 has no start date", "warning must name the engine and major version")
+	assert.Contains(t, logged, "No lifecycle data for mysql 5.7.44", "caller must surface the unknown status")
 }
 
 // TestQueryRunningInstanceEngineVersions_ProfileSelection asserts the
