@@ -21,11 +21,20 @@ func TestDetermineCSVCoverage(t *testing.T) {
 		expected float64
 	}{
 		{
-			name: "Default coverage (80) changed to 100 for CSV",
+			name: "No --coverage flag buys 100% for CSV",
+			cfg: Config{
+				Coverage:            80.0,
+				CoverageFromDefault: true,
+			},
+			expected: 100.0,
+		},
+		{
+			// #2236: an explicit value equal to the flag's default is honored.
+			name: "Explicit 80% coverage preserved",
 			cfg: Config{
 				Coverage: 80.0,
 			},
-			expected: 100.0,
+			expected: 80.0,
 		},
 		{
 			name: "User-specified coverage preserved",

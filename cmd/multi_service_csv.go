@@ -20,11 +20,12 @@ import (
 )
 
 // determineCSVCoverage determines the coverage percentage to use for CSV mode.
+// Without --coverage on the command line a CSV run buys each row's full Count
+// (100%). An explicit --coverage is always honored, including a value equal to
+// the flag's default (80): the check uses CoverageFromDefault, which runTool
+// sets from cobra's Changed(), never a comparison against the default value.
 func determineCSVCoverage(cfg Config) float64 {
-	// When using CSV input, default to 100% coverage (use exact numbers from CSV)
-	// unless user explicitly provided a different coverage value
-	if cfg.Coverage == 80.0 {
-		// User didn't override the default, so use 100% for CSV mode
+	if cfg.CoverageFromDefault {
 		return 100.0
 	}
 	return cfg.Coverage
