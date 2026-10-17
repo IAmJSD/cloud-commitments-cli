@@ -16,6 +16,12 @@ import (
 // regions and are not supported for Savings Plan purchases.
 const spAPIRegion = "us-east-1"
 
+// spCommitmentFormat is how the library formats HourlyCommitment for the
+// CreateSavingsPlan call (savingsplans/client.go). A positive value that
+// formats as "0.00" would be sent as a zero commitment, so preconditions
+// reject it.
+const spCommitmentFormat = "%.2f"
+
 // savingsPlanRowKey identifies one Savings Plan purchase. Two rows with the
 // same key buy the same plan twice.
 func savingsPlanRowKey(rec common.Recommendation) string {
@@ -141,6 +147,9 @@ func validateSavingsPlanPreconditions(rec common.Recommendation) error {
 	}
 	if d.HourlyCommitment <= 0 {
 		return fmt.Errorf("%s recommendation has no positive hourly commitment (got %v)", rec.Service, d.HourlyCommitment)
+	}
+	if fmt.Sprintf(spCommitmentFormat, d.HourlyCommitment) == "0.00" {
+		return fmt.Errorf("%s recommendation's hourly commitment %v would be sent as 0.00; it must be at least 0.005", rec.Service, d.HourlyCommitment)
 	}
 	if rec.Service == common.ServiceSavingsPlansEC2Instance && d.Region == "" {
 		return fmt.Errorf("EC2 Instance Savings Plan needs a region to pick the offering")
