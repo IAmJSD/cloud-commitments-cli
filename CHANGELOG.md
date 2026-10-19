@@ -20,6 +20,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - `--target-coverage` with `--rebuy-window-days` no longer buys replacement EC2 and
   other non-RDS RIs again when they were already bought inside the coverage
   lookback: the expiring RIs are netted against those replacements (#2235).
+- `--min-savings-pct` and `--max-break-even-months` now apply on `--input-csv`
+  runs instead of being refused. The CSV report gains `SavingsPercentage` and
+  `BreakEvenMonths` columns; replaying a report that lacks a column a set flag
+  needs (or has it blank) fails with an error naming the flag, never reading the
+  missing figure as 0. When present, the `SavingsPercentage` and
+  `BreakEvenMonths` columns are now parsed strictly (an invalid value fails the
+  load) even when the threshold flags are unset. `--max-instances` still ranks
+  on savings per instance (#1819).
 - Recommendations with no account ID or name are now reported in the drop summary
   when an account filter (`--include-accounts` or `--exclude-accounts`) removes
   them (#1613).
