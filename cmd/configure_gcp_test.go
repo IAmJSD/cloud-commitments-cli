@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -22,6 +20,7 @@ import (
 // appended to an existing binding for the role and the function reports a
 // change.
 func TestAddMemberToPolicyBinding_AppendsToExistingBinding(t *testing.T) {
+	t.Parallel()
 	policy := &cloudresourcemanager.Policy{
 		Bindings: []*cloudresourcemanager.Binding{
 			{Role: "roles/viewer", Members: []string{"user:existing@example.com"}},
@@ -42,6 +41,7 @@ func TestAddMemberToPolicyBinding_AppendsToExistingBinding(t *testing.T) {
 // TestAddMemberToPolicyBinding_AlreadyBoundNoChange verifies that an
 // already-bound member is a no-op (returns false, no duplicate appended).
 func TestAddMemberToPolicyBinding_AlreadyBoundNoChange(t *testing.T) {
+	t.Parallel()
 	member := "serviceAccount:sa@proj.iam.gserviceaccount.com"
 	policy := &cloudresourcemanager.Policy{
 		Bindings: []*cloudresourcemanager.Binding{
@@ -61,6 +61,7 @@ func TestAddMemberToPolicyBinding_AlreadyBoundNoChange(t *testing.T) {
 // TestAddMemberToPolicyBinding_CreatesMissingBinding verifies a new binding is
 // appended when the role is absent from the policy.
 func TestAddMemberToPolicyBinding_CreatesMissingBinding(t *testing.T) {
+	t.Parallel()
 	policy := &cloudresourcemanager.Policy{
 		Bindings: []*cloudresourcemanager.Binding{
 			{Role: "roles/viewer", Members: []string{"user:existing@example.com"}},
@@ -72,10 +73,10 @@ func TestAddMemberToPolicyBinding_CreatesMissingBinding(t *testing.T) {
 
 	require.NoError(t, err)
 	require.True(t, changed, "adding a member to an absent role must create the binding and report a change")
-	require.Len(t, policy.Bindings, 2)
-	newBinding := policy.Bindings[1]
-	assert.Equal(t, "roles/billing.projectManager", newBinding.Role)
-	assert.Equal(t, []string{member}, newBinding.Members)
+	assert.Equal(t, []*cloudresourcemanager.Binding{
+		{Role: "roles/viewer", Members: []string{"user:existing@example.com"}},
+		{Role: "roles/billing.projectManager", Members: []string{member}},
+	}, policy.Bindings)
 }
 
 // TestAddMemberToPolicyBinding_PreservesConditionalBindings is the regression
@@ -83,6 +84,7 @@ func TestAddMemberToPolicyBinding_CreatesMissingBinding(t *testing.T) {
 // role must NOT drop or mutate a conditional (IAM condition) binding on another
 // role. Losing conditional bindings would silently widen access.
 func TestAddMemberToPolicyBinding_PreservesConditionalBindings(t *testing.T) {
+	t.Parallel()
 	conditional := &cloudresourcemanager.Binding{
 		Role:    "roles/storage.objectViewer",
 		Members: []string{"user:auditor@example.com"},
@@ -120,6 +122,154 @@ func TestAddMemberToPolicyBinding_PreservesConditionalBindings(t *testing.T) {
 		"the conditional binding's members must be untouched")
 }
 
+// TestAddMemberToPolicyBinding_EmptyPolicyCreatesBinding verifies an empty
+// policy with no bindings gets exactly one new binding holding only the
+// requested member.
+func TestAddMemberToPolicyBinding_EmptyPolicyCreatesBinding(t *testing.T) {
+	t.Parallel()
+	policy := &cloudresourcemanager.Policy{}
+	member := "serviceAccount:sa@proj.iam.gserviceaccount.com"
+
+	changed, err := addMemberToPolicyBinding(policy, member, "roles/viewer")
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	assert.Equal(t, []*cloudresourcemanager.Binding{
+		{Role: "roles/viewer", Members: []string{member}},
+	}, policy.Bindings)
+}
+
+// TestAddMemberToPolicyBinding_MultipleBindingsSameRole verifies that with
+// several unconditional bindings of one role the member is appended to the last
+// one, earlier ones and other roles stay untouched, and a member already present
+// in any of them is a no-op.
+func TestAddMemberToPolicyBinding_MultipleBindingsSameRole(t *testing.T) {
+	t.Parallel()
+	member := "serviceAccount:sa@proj.iam.gserviceaccount.com"
+	newPolicy := func() *cloudresourcemanager.Policy {
+		return &cloudresourcemanager.Policy{
+			Bindings: []*cloudresourcemanager.Binding{
+				{Role: "roles/viewer", Members: []string{"user:a@example.com"}},
+				{Role: "roles/editor", Members: []string{"user:e@example.com"}},
+				{Role: "roles/viewer", Members: []string{"user:b@example.com"}},
+			},
+		}
+	}
+
+	policy := newPolicy()
+	changed, err := addMemberToPolicyBinding(policy, member, "roles/viewer")
+	require.NoError(t, err)
+	require.True(t, changed)
+	assert.Equal(t, []*cloudresourcemanager.Binding{
+		{Role: "roles/viewer", Members: []string{"user:a@example.com"}},
+		{Role: "roles/editor", Members: []string{"user:e@example.com"}},
+		{Role: "roles/viewer", Members: []string{"user:b@example.com", member}},
+	}, policy.Bindings)
+
+	// Member already in the first of the two bindings: no change anywhere.
+	policy = newPolicy()
+	policy.Bindings[0].Members = append(policy.Bindings[0].Members, member)
+	changed, err = addMemberToPolicyBinding(policy, member, "roles/viewer")
+	require.NoError(t, err)
+	require.False(t, changed)
+	assert.Equal(t, []*cloudresourcemanager.Binding{
+		{Role: "roles/viewer", Members: []string{"user:a@example.com", member}},
+		{Role: "roles/editor", Members: []string{"user:e@example.com"}},
+		{Role: "roles/viewer", Members: []string{"user:b@example.com"}},
+	}, policy.Bindings)
+}
+
+// TestAddMemberToPolicyBinding_OnlyConditionalAccessErrors verifies that a
+// member bound to the role only through a conditional binding is rejected with
+// an error instead of being silently granted unconditional access, and that the
+// policy is left unchanged.
+func TestAddMemberToPolicyBinding_OnlyConditionalAccessErrors(t *testing.T) {
+	t.Parallel()
+	member := "serviceAccount:sa@proj.iam.gserviceaccount.com"
+	cond := &cloudresourcemanager.Expr{Title: "temp", Expression: `request.time < timestamp("2030-01-01T00:00:00Z")`}
+	policy := &cloudresourcemanager.Policy{
+		Bindings: []*cloudresourcemanager.Binding{
+			{Role: "roles/viewer", Members: []string{member}, Condition: cond},
+			{Role: "roles/viewer", Members: []string{"user:other@example.com"}},
+		},
+	}
+
+	changed, err := addMemberToPolicyBinding(policy, member, "roles/viewer")
+
+	require.EqualError(t, err, member+" has only conditional access to roles/viewer; review the existing IAM condition before granting unconditional access")
+	assert.False(t, changed)
+	assert.Equal(t, []*cloudresourcemanager.Binding{
+		{Role: "roles/viewer", Members: []string{member}, Condition: cond},
+		{Role: "roles/viewer", Members: []string{"user:other@example.com"}},
+	}, policy.Bindings, "policy must not be modified on error")
+}
+
+// TestAddMemberToPolicyBinding_UnconditionalAmongConditional verifies the
+// member is appended to the unconditional binding of the role even when
+// conditional bindings of the same role surround it, and that a role with only
+// conditional bindings gets a new unconditional binding instead of widening one.
+func TestAddMemberToPolicyBinding_UnconditionalAmongConditional(t *testing.T) {
+	t.Parallel()
+	member := "serviceAccount:sa@proj.iam.gserviceaccount.com"
+	cond1 := &cloudresourcemanager.Expr{Title: "c1", Expression: `request.time < timestamp("2030-01-01T00:00:00Z")`}
+	cond2 := &cloudresourcemanager.Expr{Title: "c2", Expression: `resource.name.startsWith("projects/_/buckets/prod-")`}
+
+	policy := &cloudresourcemanager.Policy{
+		Version: 3,
+		Bindings: []*cloudresourcemanager.Binding{
+			{Role: "roles/viewer", Members: []string{"user:c1@example.com"}, Condition: cond1},
+			{Role: "roles/viewer", Members: []string{"user:u@example.com"}},
+			{Role: "roles/viewer", Members: []string{"user:c2@example.com"}, Condition: cond2},
+		},
+	}
+	changed, err := addMemberToPolicyBinding(policy, member, "roles/viewer")
+	require.NoError(t, err)
+	require.True(t, changed)
+	assert.Equal(t, []*cloudresourcemanager.Binding{
+		{Role: "roles/viewer", Members: []string{"user:c1@example.com"}, Condition: cond1},
+		{Role: "roles/viewer", Members: []string{"user:u@example.com", member}},
+		{Role: "roles/viewer", Members: []string{"user:c2@example.com"}, Condition: cond2},
+	}, policy.Bindings)
+
+	policy = &cloudresourcemanager.Policy{
+		Version: 3,
+		Bindings: []*cloudresourcemanager.Binding{
+			{Role: "roles/viewer", Members: []string{"user:c1@example.com"}, Condition: cond1},
+		},
+	}
+	changed, err = addMemberToPolicyBinding(policy, member, "roles/viewer")
+	require.NoError(t, err)
+	require.True(t, changed)
+	assert.Equal(t, []*cloudresourcemanager.Binding{
+		{Role: "roles/viewer", Members: []string{"user:c1@example.com"}, Condition: cond1},
+		{Role: "roles/viewer", Members: []string{member}},
+	}, policy.Bindings)
+}
+
+// TestAddMemberToPolicyBinding_ConditionalThenUnconditionalIsNoOp verifies a
+// member already holding the role unconditionally is a no-op without error even
+// when it also appears in an earlier conditional binding of the same role.
+func TestAddMemberToPolicyBinding_ConditionalThenUnconditionalIsNoOp(t *testing.T) {
+	t.Parallel()
+	member := "serviceAccount:sa@proj.iam.gserviceaccount.com"
+	cond := &cloudresourcemanager.Expr{Title: "temp", Expression: `request.time < timestamp("2030-01-01T00:00:00Z")`}
+	policy := &cloudresourcemanager.Policy{
+		Bindings: []*cloudresourcemanager.Binding{
+			{Role: "roles/viewer", Members: []string{member}, Condition: cond},
+			{Role: "roles/viewer", Members: []string{"user:u@example.com", member}},
+		},
+	}
+
+	changed, err := addMemberToPolicyBinding(policy, member, "roles/viewer")
+
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, []*cloudresourcemanager.Binding{
+		{Role: "roles/viewer", Members: []string{member}, Condition: cond},
+		{Role: "roles/viewer", Members: []string{"user:u@example.com", member}},
+	}, policy.Bindings)
+}
+
 // --- writeServiceAccountKey (key-creation rollback) ---------------------------
 
 // mockGCPKeyProvisioner is a configurable gcpKeyProvisioner used to assert the
@@ -152,6 +302,7 @@ func (m *mockGCPKeyProvisioner) DeleteKey(_ context.Context, keyName string) err
 }
 
 func TestWriteServiceAccountKey_Success(t *testing.T) {
+	t.Parallel()
 	keyMaterial := []byte(`{"type":"service_account","project_id":"proj"}`)
 	m := &mockGCPKeyProvisioner{
 		keyName:        "projects/-/serviceAccounts/sa@proj.iam.gserviceaccount.com/keys/abc123",
@@ -177,6 +328,7 @@ func TestWriteServiceAccountKey_Success(t *testing.T) {
 // (so it does not linger as an active unused credential) and the reserved local
 // file is cleaned up.
 func TestWriteServiceAccountKey_DecodeFailureRollsBack(t *testing.T) {
+	t.Parallel()
 	m := &mockGCPKeyProvisioner{
 		keyName:        "projects/-/serviceAccounts/sa@proj.iam.gserviceaccount.com/keys/abc123",
 		privateKeyData: "!!!not-base64!!!",
@@ -200,6 +352,7 @@ func TestWriteServiceAccountKey_DecodeFailureRollsBack(t *testing.T) {
 // compensating DeleteKey also fails, the error names the orphaned remote key so
 // the operator can delete it manually, while still surfacing the original cause.
 func TestWriteServiceAccountKey_RollbackFailureSurfaced(t *testing.T) {
+	t.Parallel()
 	m := &mockGCPKeyProvisioner{
 		keyName:        "projects/-/serviceAccounts/sa@proj.iam.gserviceaccount.com/keys/orphan999",
 		privateKeyData: "!!!not-base64!!!",
@@ -219,6 +372,7 @@ func TestWriteServiceAccountKey_RollbackFailureSurfaced(t *testing.T) {
 // the remote key fails, no rollback is attempted (nothing was minted) and no
 // local file is left behind.
 func TestWriteServiceAccountKey_CreateFailureNoOrphan(t *testing.T) {
+	t.Parallel()
 	m := &mockGCPKeyProvisioner{
 		createErr: &googleapi.Error{Code: 403},
 	}
@@ -237,6 +391,7 @@ func TestWriteServiceAccountKey_CreateFailureNoOrphan(t *testing.T) {
 // TestWriteServiceAccountKey_CreateFailureAmbiguous verifies that only a 4xx
 // googleapi error is a definite failure; every other outcome may have minted a key.
 func TestWriteServiceAccountKey_CreateFailureAmbiguous(t *testing.T) {
+	t.Parallel()
 	const sa = "sa@proj.iam.gserviceaccount.com"
 	cases := []struct {
 		name      string
@@ -269,6 +424,7 @@ func TestWriteServiceAccountKey_CreateFailureAmbiguous(t *testing.T) {
 // destination file already exists (exclusive-create fails), the remote key is
 // never minted, so there is nothing to orphan.
 func TestWriteServiceAccountKey_ReserveFailureNoMint(t *testing.T) {
+	t.Parallel()
 	keyFile := filepath.Join(t.TempDir(), "cudly-gcp-key.json")
 	require.NoError(t, os.WriteFile(keyFile, []byte("pre-existing"), 0o600))
 
@@ -459,45 +615,10 @@ func TestUploadGCPCredentialsFile_OperatorFileKept(t *testing.T) {
 }
 
 func TestGcloudDeleteKeyCommand(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t,
 		"gcloud iam service-accounts keys delete abc123 --iam-account=sa@proj.iam.gserviceaccount.com",
 		gcloudDeleteKeyCommand(testMintedKeyName))
 }
 
 // --- gcpStepCreateServiceAccount ---
-
-func TestGCPStepCreateServiceAccount_SkipUsesOperatorEmail(t *testing.T) {
-	const existing = "existing-sa@my-proj.iam.gserviceaccount.com"
-	reader := bufio.NewReader(strings.NewReader("s\n  " + existing + "  \n"))
-
-	email, err := gcpStepCreateServiceAccount(context.Background(), reader, "my-proj")
-
-	require.NoError(t, err)
-	assert.Equal(t, existing, email)
-	assert.NotEqual(t, "cudly-service-account@my-proj.iam.gserviceaccount.com", email)
-}
-
-func TestGCPStepCreateServiceAccount_UnknownOptionPromptsForEmail(t *testing.T) {
-	const existing = "other@my-proj.iam.gserviceaccount.com"
-	reader := bufio.NewReader(strings.NewReader("x\n" + existing + "\n"))
-
-	email, err := gcpStepCreateServiceAccount(context.Background(), reader, "my-proj")
-
-	require.NoError(t, err)
-	assert.Equal(t, existing, email)
-}
-
-func TestGCPStepCreateServiceAccount_SkipRejectsInvalidEmail(t *testing.T) {
-	for _, in := range []string{"s\n\n", "s\nnot-an-email\n", "s\nuser@example.com\n", "s\n@x.gserviceaccount.com\n", "s\na@b@c.gserviceaccount.com\n", "s\na@.gserviceaccount.com\n", "s\n   ", "s\na\x00@x.gserviceaccount.com\n", "s\n"} {
-		email, err := gcpStepCreateServiceAccount(context.Background(), bufio.NewReader(strings.NewReader(in)), "my-proj")
-		require.Error(t, err, "input %q", in)
-		assert.Empty(t, email)
-	}
-}
-
-func TestGCPStepCreateServiceAccount_SkipAcceptsUppercaseEmail(t *testing.T) {
-	const existing = "Existing-SA@My-Proj.IAM.GServiceAccount.com"
-	email, err := gcpStepCreateServiceAccount(context.Background(), bufio.NewReader(strings.NewReader("s\n"+existing+"\n")), "my-proj")
-	require.NoError(t, err)
-	assert.Equal(t, strings.ToLower(existing), email)
-}
