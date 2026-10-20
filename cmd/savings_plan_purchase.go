@@ -142,11 +142,11 @@ func validateEC2AvailabilityZone(resourceType string, d *common.ComputeDetails) 
 	switch strings.ToLower(d.Scope) {
 	case "availability-zone", "availability zone":
 		if az == "" {
-			return fmt.Errorf("EC2 recommendation for %s has zonal scope but no AvailabilityZone; a zonal RI is bought in a specific AZ, so re-export the CSV with the AvailabilityZone column or re-fetch the recommendation", resourceType)
+			return fmt.Errorf("EC2 recommendation for %s has zonal scope but no AvailabilityZone; a zonal RI is bought in a specific availability zone, so re-export the CSV with the AvailabilityZone column or re-fetch the recommendation", resourceType)
 		}
 	case "region":
 		if az != "" {
-			return fmt.Errorf("EC2 recommendation for %s has regional scope but AvailabilityZone %q; clear the AvailabilityZone or re-fetch the recommendation", resourceType, az)
+			return fmt.Errorf("EC2 recommendation for %s has regional scope but AvailabilityZone %q; a regional RI has no availability zone, so clear the AvailabilityZone or re-fetch the recommendation", resourceType, az)
 		}
 	}
 	return nil
