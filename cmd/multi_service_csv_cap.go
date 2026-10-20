@@ -56,13 +56,24 @@ func applyMinCountFloor(recs []common.Recommendation, minCount int) []common.Rec
 	if minCount <= 0 {
 		return recs
 	}
-	scored := scorer.Score(recs, scorer.Config{MinCount: minCount})
-	for i := range scored.Filtered {
-		f := scored.Filtered[i]
-		AppLogger.Printf("🔒 --min-count dropped %s %s %s: %s\n",
-			f.Recommendation.Service, f.Recommendation.Region, f.Recommendation.ResourceType, f.FilterReason)
+	// Savings Plans carry a placeholder Count of 1, so the floor does not apply.
+	// Rows are scored one at a time so the output keeps the input order
+	// (scorer.Score sorts its Passed list).
+	var kept []common.Recommendation
+	for i := range recs {
+		if isSavingsPlan(recs[i]) {
+			kept = append(kept, recs[i])
+			continue
+		}
+		scored := scorer.Score(recs[i:i+1], scorer.Config{MinCount: minCount})
+		for j := range scored.Filtered {
+			f := scored.Filtered[j]
+			AppLogger.Printf("🔒 --min-count dropped %s %s %s: %s\n",
+				f.Recommendation.Service, f.Recommendation.Region, f.Recommendation.ResourceType, f.FilterReason)
+		}
+		kept = append(kept, scored.Passed...)
 	}
-	return scored.Passed
+	return kept
 }
 
 // applyThresholdGates drops recommendations that fail --min-savings-pct or
@@ -152,11 +163,13 @@ func requireRankingSignal(recs []common.Recommendation, cfg Config) error {
 		return nil
 	}
 
+	// Savings Plans are exempt from the cap, so they are never ranked.
+	others := withoutSavingsPlans(recs)
 	unrankable := make([]string, 0)
-	for i := range recs {
-		if recs[i].EstimatedSavings <= 0 {
+	for i := range others {
+		if others[i].EstimatedSavings <= 0 {
 			unrankable = append(unrankable, fmt.Sprintf("%s %s %s",
-				recs[i].Service, recs[i].Region, recs[i].ResourceType))
+				others[i].Service, others[i].Region, others[i].ResourceType))
 		}
 	}
 	if len(unrankable) == 0 {
@@ -173,5 +186,5 @@ func requireRankingSignal(recs []common.Recommendation, cfg Config) error {
 		"--max-instances=%d has to choose which of %d recommendations to buy, but %d row(s) of %s carry no usable EstimatedSavings value: %s%s. "+
 			"A blank or missing EstimatedSavings cell is indistinguishable from $0 of savings, so capping on it would pick by instance-type name rather than by value. "+
 			"Populate EstimatedSavings for every row, or drop --max-instances and cap the file itself",
-		cfg.MaxInstances, len(recs), len(unrankable), cfg.CSVInput, strings.Join(named, ", "), suffix)
+		cfg.MaxInstances, len(others), len(unrankable), cfg.CSVInput, strings.Join(named, ", "), suffix)
 }

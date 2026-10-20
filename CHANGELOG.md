@@ -13,6 +13,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `--max-instances` and `--min-count` no longer apply to Savings Plans, whose
+  Count of 1 is not an instance count: a Savings Plan neither uses up the
+  instance cap nor is dropped by the floor (#1613).
+- `configure-azure` and `configure-gcp` now fail when listing the credentials
+  secret fails (for example access denied) instead of proceeding to the update
+  and looking successful; `ListSecrets` also reads every result page (#1613).
+- `configure-azure --client-secret` is deprecated (it still works): omit it and
+  enter the secret at the interactive prompt (#1613).
+- The `configure-azure` help no longer shows `--client-secret` in its example;
+  the client secret is read from the interactive prompt (#1613).
+- `configure-azure` and `configure-gcp` now store credentials in the secret whose
+  name matches exactly instead of the first prefix match from Secrets Manager
+  (which could be `<name>-old`), and fail when two secrets share the name (#1613).
+- The RDS engine-version scan now stops on cancellation and fails with an error
+  naming the region after 200 pages of `DescribeDBInstances` instead of paging
+  without bound (#1613).
+- `configure-azure` no longer creates the Entra app, client secret and role
+  assignment when you press Enter at the create-service-principal prompt; Enter
+  now skips, as in the GCP wizard (#1613).
 - Savings Plans purchases now send the hourly commitment truncated to 5 decimals
   (at least 2 shown) instead of rounded to cents, and accept amounts from 0.001
   to 1,000,000, so a 0.001 to 0.004 commitment is no longer rejected (library
@@ -121,6 +140,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Bumped `cloud-commitments-go` (pkg and the aws, azure and gcp providers) to
+  `cfe8ac29`. User-visible effects: recommendations reported in a non-USD
+  currency are skipped at ingestion and the skip is reported; RDS SQL Server
+  RIs are sized per instance size; GCP no longer emits Cloud SQL and Memorystore
+  CUD recommendations from the performance recommenders; Azure Savings Plan
+  purchases refuse a malformed idempotency token (#1613).
 - BREAKING: `--input-csv` now requires `Term` and `PaymentOption` columns in
   addition to `Service`, `Region`, `ResourceType` and `Count`. `Term` must be
   `1yr` or `3yr` and `PaymentOption` must be `all-upfront`, `partial-upfront`
