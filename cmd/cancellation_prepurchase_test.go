@@ -313,6 +313,7 @@ func TestFetchAllRecs_AccountFilters(t *testing.T) {
 }
 
 func TestRequireResolvedAccountNames_CSVRows(t *testing.T) {
+	t.Parallel()
 	rows := []common.Recommendation{{Account: testCallerAccount, AccountName: testCallerAccount}}
 	// The CSV wrote the ID where the name lookup had failed.
 	require.Error(t, requireResolvedAccountNames(rows, &Config{ExcludeAccounts: []string{"sandbox"}}))
@@ -324,6 +325,7 @@ func TestRequireResolvedAccountNames_CSVRows(t *testing.T) {
 }
 
 func TestRequireNamesResolved_BlankFilterValueIsNotANameFilter(t *testing.T) {
+	t.Parallel()
 	unresolved := []common.Recommendation{{Account: testCallerAccount, AccountName: testCallerAccount}}
 
 	require.NoError(t, requireNamesResolved(unresolved, &Config{ExcludeAccounts: []string{" "}}))
@@ -337,6 +339,20 @@ func TestFilterAndAdjustRecommendations_NameExcludeOnCSVRowsWithoutNamesFails(t 
 	recs, err := filterAndAdjustRecommendations(context.Background(), rows, 100, Config{ExcludeAccounts: []string{"sandbox"}, IncludeExtendedSupport: true})
 
 	require.Error(t, err, "replay must not let an excluded account through because its name is missing")
+	assert.Empty(t, recs)
+}
+
+func TestFilterAndAdjustRecommendations_PartialExcludeOnCSVRowsFails(t *testing.T) {
+	captureAppLog(t)
+	rows := []common.Recommendation{
+		{Service: common.ServiceRDS, Region: "us-east-1", Account: testCallerAccount, AccountName: "prod-main", ResourceType: "db.t3.small", Count: 2},
+		{Service: common.ServiceRDS, Region: "us-east-1", Account: testOtherAcct, AccountName: "dev", ResourceType: "db.t3.small", Count: 2},
+	}
+
+	recs, err := filterAndAdjustRecommendations(context.Background(), rows, 100, Config{ExcludeAccounts: []string{"prod"}, IncludeExtendedSupport: true})
+
+	require.Error(t, err, "a partial exclude must be refused on replay, not silently excluded nothing")
+	assert.Contains(t, err.Error(), `matches no account exactly`)
 	assert.Empty(t, recs)
 }
 

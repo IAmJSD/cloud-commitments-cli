@@ -179,6 +179,26 @@ func TestAzureWizard_SkipCreateSP_ReturnsNil(t *testing.T) {
 	assert.Nil(t, created)
 }
 
+// TestAzureWizard_EmptyInputSkipsCreateSP checks that pressing Enter at the
+// create-SP prompt skips (the default), so no Entra app, password or role
+// assignment is created by accident.
+func TestAzureWizard_EmptyInputSkipsCreateSP(t *testing.T) {
+	stubAzureSPConstructors(t, nil)
+	newAzureSPProvisionerFn = func(_ string) (azureSPProvisioner, error) {
+		t.Fatal("provisioner must not be built on empty input")
+		return nil, nil
+	}
+
+	var created *AzureCredentials
+	var err error
+	captureAllOutput(t, func() {
+		created, err = azureStepCreateServicePrincipal(context.Background(),
+			bufio.NewReader(strings.NewReader("\n")), testSubID)
+	})
+	require.NoError(t, err)
+	assert.Nil(t, created)
+}
+
 // TestAzureWizard_FailureAfterCreate_NoSecretInError covers the rollback path
 // and the post-create recovery hint: neither error text nor output may carry
 // the secret.
@@ -339,4 +359,15 @@ func TestCollectAzureCredentials_PromptWording(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "Enter the credentials of an existing Azure Service Principal:")
 	assert.NotContains(t, out, "output above")
+}
+
+// The help example must not teach passing the secret on the command line.
+func TestConfigureAzureHelp_NoClientSecretFlagExample(t *testing.T) {
+	assert.NotContains(t, configureAzureCmd.Long, "--client-secret")
+}
+
+func TestConfigureAzure_ClientSecretFlagDeprecated(t *testing.T) {
+	flag := configureAzureCmd.Flags().Lookup("client-secret")
+	require.NotNil(t, flag)
+	assert.NotEmpty(t, flag.Deprecated)
 }

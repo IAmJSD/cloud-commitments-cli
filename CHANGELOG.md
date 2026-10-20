@@ -10,9 +10,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - `archera-comparison` command: a read-only, default-off comparison of an
   Archera commitment plan (table or JSON). See `docs/cli/archera-comparison.md`
   (#2156).
+- `--ri-account-scope` flag (`linked` default, `payer`) for Reserved Instance
+  recommendations, mirroring `--sp-account-scope` (#2181).
 
 ### Fixed
 
+- `--max-instances` drop summary: a zero-Count recommendation swept out by the
+  `--min-count` floor no longer drives the tally negative (which panicked in
+  `DropSummary.Add`), and removed zero-Count entries are now counted and named
+  (#1742).
+- `--target-coverage` RDS recommendations now report a `ProjectedCoverage` that
+  matches the final count after `--max-instances`, `--count-override` or the
+  duplicate-RI check lowered it, instead of the pre-cap family value (#2214).
+- `--max-instances` and `--min-count` no longer apply to Savings Plans, whose
+  Count of 1 is not an instance count: a Savings Plan neither uses up the
+  instance cap nor is dropped by the floor (#1613).
+- `configure-azure` and `configure-gcp` now fail when listing the credentials
+  secret fails (for example access denied) instead of proceeding to the update
+  and looking successful; `ListSecrets` also reads every result page (#1613).
+- `configure-azure --client-secret` is deprecated (it still works): omit it and
+  enter the secret at the interactive prompt (#1613).
+- The `configure-azure` help no longer shows `--client-secret` in its example;
+  the client secret is read from the interactive prompt (#1613).
+- `configure-azure` and `configure-gcp` now store credentials in the secret whose
+  name matches exactly instead of the first prefix match from Secrets Manager
+  (which could be `<name>-old`), and fail when two secrets share the name (#1613).
+- The RDS engine-version scan now stops on cancellation and fails with an error
+  naming the region after 200 pages of `DescribeDBInstances` instead of paging
+  without bound (#1613).
+- `configure-azure` no longer creates the Entra app, client secret and role
+  assignment when you press Enter at the create-service-principal prompt; Enter
+  now skips, as in the GCP wizard (#1613).
+- Savings Plans purchases now send the hourly commitment truncated to 5 decimals
+  (at least 2 shown) instead of rounded to cents, and accept amounts from 0.001
+  to 1,000,000, so a 0.001 to 0.004 commitment is no longer rejected (library
+  bump, #2235).
+- `--target-coverage` with `--rebuy-window-days` no longer buys replacement EC2 and
+  other non-RDS RIs again when they were already bought inside the coverage
+  lookback: the expiring RIs are netted against those replacements (#2235).
+- `--min-savings-pct` and `--max-break-even-months` now apply on `--input-csv`
+  runs instead of being refused. The CSV report gains `SavingsPercentage` and
+  `BreakEvenMonths` columns; replaying a report that lacks a column a set flag
+  needs (or has it blank) fails with an error naming the flag, never reading the
+  missing figure as 0. When present, the `SavingsPercentage` and
+  `BreakEvenMonths` columns are now parsed strictly (an invalid value fails the
+  load) even when the threshold flags are unset. `--max-instances` still ranks
+  on savings per instance (#1819).
 - Zonal EC2 rows now keep their Availability Zone through the CSV report and
   `--input-csv`: reports gain an `AvailabilityZone` column, appended after
   `Scope` (blank for regional rows and other services). A dry run now refuses a
@@ -112,6 +155,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Bump cloud-commitments-go to dcb5ba0: Azure reservation purchases use one
+  shared helper with aligned guards, error messages and display names, and hold
+  the shared concurrency slot per call instead of per batch; the AWS provider
+  gains a configurable account scope for RI purchase recommendations and an
+  exported `RederiveFamilyCoverage` for post-sizing count changes.
+- Bumped `cloud-commitments-go` (pkg and the aws, azure and gcp providers) to
+  `cfe8ac29`. User-visible effects: recommendations reported in a non-USD
+  currency are skipped at ingestion and the skip is reported; RDS SQL Server
+  RIs are sized per instance size; GCP no longer emits Cloud SQL and Memorystore
+  CUD recommendations from the performance recommenders; Azure Savings Plan
+  purchases refuse a malformed idempotency token (#1613).
 - BREAKING: `--input-csv` now requires `Term` and `PaymentOption` columns in
   addition to `Service`, `Region`, `ResourceType` and `Count`. `Term` must be
   `1yr` or `3yr` and `PaymentOption` must be `all-upfront`, `partial-upfront`

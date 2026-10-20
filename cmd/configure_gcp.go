@@ -85,7 +85,7 @@ Or run interactively to create a new service account:
 func init() {
 	rootCmd.AddCommand(configureGCPCmd)
 
-	configureGCPCmd.Flags().StringVar(&gcpOpts.StackName, "stack-name", "cudly", "CUDly CloudFormation stack name")
+	configureGCPCmd.Flags().StringVar(&gcpOpts.StackName, "stack-name", "cudly", "Name of the CUDly deployment; prefixes the AWS Secrets Manager secret (<stack-name>-GCPCredentials)")
 	configureGCPCmd.Flags().StringVar(&gcpOpts.Profile, "profile", "", "AWS profile to use")
 	configureGCPCmd.Flags().StringVarP(&gcpOpts.CredentialsFile, "credentials-file", "f", "", "Path to GCP service account JSON key file")
 	configureGCPCmd.Flags().StringVar(&gcpOpts.ProjectID, "project-id", "", "GCP Project ID (overrides value in credentials file)")
@@ -121,13 +121,9 @@ func storeGCPCredentials(ctx context.Context, store SecretsStore, stackName, cre
 	// Build expected secret name pattern
 	secretName := fmt.Sprintf("%s-GCPCredentials", stackName)
 
-	// Try to find the actual secret ARN by listing secrets
-	arns, err := store.ListSecrets(ctx, secretName)
-
-	// Use the ARN if found, otherwise use the name (will fail if secret doesn't exist)
-	secretID := secretName
-	if err == nil && len(arns) > 0 {
-		secretID = arns[0]
+	secretID, err := resolveSecretID(ctx, store, secretName)
+	if err != nil {
+		return err
 	}
 
 	// Store credentials in Secrets Manager (using the original JSON format)

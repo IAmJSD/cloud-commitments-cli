@@ -194,7 +194,7 @@ func runToolMultiService(ctx context.Context, cfg Config) {
 	exitIfInterrupted(ctx, "fetching recommendations")
 
 	// Phase 2: score, enforce the run-wide instance cap, and display.
-	scoredResult := scoreLimitAndDisplay(allRecs, cfg, drops)
+	scoredResult := scoreLimitAndDisplay(allRecs, cfg, drops, coverageMap)
 	if len(scoredResult.Passed) == 0 {
 		printDropSummary(drops)
 		AppLogger.Printf("\nℹ️  No recommendations passed filters. Nothing to purchase.\n")
@@ -348,7 +348,12 @@ func loadAWSConfig(ctx context.Context, cfg Config) (aws.Config, error) {
 // prompt and the purchase loop all describe the same post-cap set, and so the
 // instances that survive are the highest-savings ones run-wide (scorer.Score
 // sorts Passed by savings percentage descending).
-func scoreLimitAndDisplay(recs []common.Recommendation, cfg Config, drops *common.DropSummary) scorer.ScoredResult {
+//
+// RDS family coverage is re-derived after the cap (see rederiveRDSFamilyCoverage),
+// because the cap, --count-override and the duplicate check all change Count
+// after family-NU sizing wrote ProjectedCoverage (#2214). coverageMap must be
+// the map the sizing stage used.
+func scoreLimitAndDisplay(recs []common.Recommendation, cfg Config, drops *common.DropSummary, coverageMap recommendations.PoolCoverageMap) scorer.ScoredResult {
 	scorerCfg := scorer.Config{
 		MinSavingsPct:      cfg.MinSavingsPct,
 		MaxBreakEvenMonths: cfg.MaxBreakEvenMonths,
@@ -356,10 +361,23 @@ func scoreLimitAndDisplay(recs []common.Recommendation, cfg Config, drops *commo
 	}
 	result := scorer.Score(recs, scorerCfg)
 	result.Passed = applyGlobalInstanceLimit(result.Passed, cfg, rankBySavingsPercentage, drops)
+	result.Passed = rederiveRDSFamilyCoverage(result.Passed, cfg, coverageMap)
 	fmt.Print(reporter.RenderTable(result))
 	fmt.Print(reporter.RenderExcluded(result))
 	fmt.Print(reporter.RenderSummary(result))
 	return result
+}
+
+// rederiveRDSFamilyCoverage refreshes the family-wide RDS ProjectedCoverage
+// from the final counts. It only runs for --target-coverage, the sole path
+// where ApplyFamilyNUSizingRDS wrote that field; on the legacy --coverage path
+// the field is a per-pool value that RederiveFamilyCoverage would overwrite.
+// The CSV path has no coverage map and does not call it.
+func rederiveRDSFamilyCoverage(recs []common.Recommendation, cfg Config, coverageMap recommendations.PoolCoverageMap) []common.Recommendation {
+	if cfg.TargetCoverage <= 0 {
+		return recs
+	}
+	return recommendations.RederiveFamilyCoverage(recs, coverageMap)
 }
 
 // rankingRule names the ordering --max-instances consumes, so the cap can say
@@ -373,10 +391,11 @@ const (
 	// rankBySavingsPercentage is the recommendation-driven path: scorer.Score
 	// sorts on SavingsPercentage, an intensive rate, before the cap runs.
 	rankBySavingsPercentage rankingRule = "highest savings-percentage recommendations first"
-	// rankBySavingsPerInstance is the --input-csv path: a CSV row carries no
-	// savings percentage, so sortBySavingsPerInstance derives the rate from
-	// the EstimatedSavings and Count columns it does carry.
-	rankBySavingsPerInstance rankingRule = "highest savings-per-instance rows first (a CSV row carries no savings percentage)"
+	// rankBySavingsPerInstance is the --input-csv path: the cap is a budget in
+	// instances, and a CSV may lack the savings percentage (older reports), so
+	// sortBySavingsPerInstance derives the rate from the EstimatedSavings and
+	// Count columns every CSV carries.
+	rankBySavingsPerInstance rankingRule = "highest savings-per-instance rows first (EstimatedSavings / Count, not savings percentage)"
 )
 
 // capBinds reports whether --max-instances will actually remove instances from
@@ -388,7 +407,8 @@ const (
 // conditions drift apart, either a run is refused for a cap that changes
 // nothing, or an unrankable run reaches the cap after all.
 func capBinds(recs []common.Recommendation, cfg Config) bool {
-	return cfg.MaxInstances > 0 && CalculateTotalInstances(recs) > int(cfg.MaxInstances)
+	others := withoutSavingsPlans(recs)
+	return cfg.MaxInstances > 0 && CalculateTotalInstances(others) > int(cfg.MaxInstances)
 }
 
 // applyGlobalInstanceLimit enforces --max-instances once across the entire run.
@@ -416,12 +436,16 @@ func applyGlobalInstanceLimit(passed []common.Recommendation, cfg Config, rule r
 		return passed
 	}
 
-	totalBefore := CalculateTotalInstances(passed)
-	limited := ApplyInstanceLimit(passed, cfg.MaxInstances)
+	// Savings Plans are exempt from the cap and the post-cap floor: their Count
+	// is a placeholder 1, not an instance count. The report and the floor see
+	// only the instance-based rows, whose capped result is a prefix of its input.
+	others := withoutSavingsPlans(passed)
+	totalBefore := CalculateTotalInstances(others)
+	limited := ApplyInstanceLimit(others, cfg.MaxInstances)
 	limited, belowMin := dropTruncatedBelowMinCount(limited, cfg.MinCount)
-	reportInstanceLimit(passed, limited, len(belowMin), totalBefore, cfg.MaxInstances, rule, drops)
+	reportInstanceLimit(others, limited, len(belowMin), totalBefore, cfg.MaxInstances, rule, drops)
 	reportMinCountDrops(belowMin, cfg.MinCount, drops)
-	return limited
+	return mergeKeepingOrder(passed, limited)
 }
 
 // dropTruncatedBelowMinCount removes recommendations that the cap truncated to
@@ -491,26 +515,32 @@ func reportInstanceLimit(before, after []common.Recommendation, belowMinCount, t
 		maxInstances, len(before), totalBefore)
 	AppLogger.Printf("   Keeping the %s. The following are reduced or dropped:\n", rule)
 
+	// after is a prefix of before, so membership is positional: every entry past
+	// len(after) was removed, whatever its Count (a zero-Count entry equals its
+	// own "kept" count of 0 and must still be counted as removed).
 	reduced, dropped := 0, 0
 	for i := range before {
 		rec := before[i]
-		kept := 0
-		if i < len(after) {
-			kept = after[i].Count
-		}
-		switch {
-		case kept == rec.Count:
-			continue
-		case kept > 0:
-			reduced++
-			AppLogger.Printf("   • reduced: %s %s %s %d → %d instances\n", rec.Service, rec.Region, rec.ResourceType, rec.Count, kept)
-		default:
+		if i >= len(after) {
 			dropped++
 			AppLogger.Printf("   • dropped: %s %s %s (%d instances)\n", rec.Service, rec.Region, rec.ResourceType, rec.Count)
+			continue
+		}
+		if kept := after[i].Count; kept != rec.Count {
+			reduced++
+			AppLogger.Printf("   • reduced: %s %s %s %d → %d instances\n", rec.Service, rec.Region, rec.ResourceType, rec.Count, kept)
 		}
 	}
 
-	drops.Add(common.DropMaxInstances, dropped-belowMinCount)
+	// The floor only removes entries from the tail of what the cap kept, so
+	// they are a subset of the removed entries. DropSummary.Add panics on a
+	// negative count; surface the broken invariant with context instead.
+	budgetDropped := dropped - belowMinCount
+	if budgetDropped < 0 {
+		panic(fmt.Sprintf("reportInstanceLimit: %d recommendations attributed to --min-count-after-cap but only %d were removed (before=%d, after=%d)",
+			belowMinCount, dropped, len(before), len(after)))
+	}
+	drops.Add(common.DropMaxInstances, budgetDropped)
 	AppLogger.Printf("   Proceeding with %d instances across %d recommendations (%d reduced, %d dropped).\n",
 		CalculateTotalInstances(after), len(after), reduced, dropped)
 }
@@ -704,7 +734,7 @@ func prepareCSVPurchaseRun(ctx context.Context, cfg Config, csvModeCoverage floa
 	}
 
 	AppLogger.Printf("📄 Reading recommendations from CSV: %s\n", cfg.CSVInput)
-	recs, err = loadRecommendationsFromCSV(cfg.CSVInput)
+	recs, err = loadCSVRecommendations(cfg.CSVInput, csvThresholdNeedsFor(cfg))
 	if err != nil {
 		return nil, aws.Config{}, "", fmt.Errorf("failed to read CSV file: %w", err)
 	}
@@ -771,6 +801,10 @@ func runToolFromCSV(ctx context.Context, cfg Config) error {
 // them, and writes the report and summary for whatever ran. A non-nil error
 // is errAuditTrailLost and/or errPurchasesFailed.
 func runCSVPurchases(ctx context.Context, awsCfg aws.Config, recs []common.Recommendation, isDryRun bool, cfg Config, runID string) error {
+	// Purchase IDs label the sizing via cfg.Coverage (effectiveSizingPct);
+	// pin it to the coverage the CSV sizing used so the label cannot drift (#2248).
+	cfg.Coverage = determineCSVCoverage(cfg)
+
 	// Create account alias cache for lookup
 	accountCache := NewAccountAliasCache(awsCfg)
 

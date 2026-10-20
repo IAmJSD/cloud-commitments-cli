@@ -484,6 +484,7 @@ func fetchRecommendationsForRegion(
 		IncludeSPTypes: cfg.IncludeSPTypes,
 		ExcludeSPTypes: cfg.ExcludeSPTypes,
 		SPAccountScope: cfg.SPAccountScope,
+		RIAccountScope: cfg.RIAccountScope,
 	}
 	// For Savings Plans, region is only the endpoint the account-level call is
 	// signed in (spAPIRegion), not a filter. The provider folds params.Region
@@ -577,8 +578,9 @@ func applyRegionFilters(
 //
 // expiringCommitments (when non-empty and cfg.RebuyWindowDays > 0) reduces
 // ExistingCoveragePct further by the share of pool demand attributable to
-// RIs expiring within the window, so --target-coverage recommends
-// replacements before the cliff. Doesn't run if either input is empty.
+// RIs expiring within the window, net of replacement RIs started inside the
+// coverage lookback (so a re-run does not buy them again), so --target-coverage
+// recommends replacements before the cliff. Doesn't run if either input is empty.
 // RDS recs sized by the family-NU pass (target-coverage mode) ignore that
 // per-rec adjustment and instead get the same commitments and window through
 // ApplyFamilyNUSizingRDSWithExpiryOptions, which deducts expiring normalized units
@@ -592,7 +594,9 @@ func applyRegionFilters(
 func applyCoverageAndOverrides(recs []common.Recommendation, cfg Config, coverageMap recommendations.PoolCoverageMap, expiringCommitments []common.Commitment, drops *common.DropSummary) []common.Recommendation {
 	recommendations.ApplyCoverageMapToRecommendations(recs, coverageMap)
 	if cfg.RebuyWindowDays > 0 && len(expiringCommitments) > 0 {
-		n, missingDemand := recommendations.AdjustExistingCoverageForExpiringCommitmentsWithCoverage(recs, expiringCommitments, cfg.RebuyWindowDays, coverageMap)
+		n, missingDemand := recommendations.AdjustExistingCoverageForExpiringCommitmentsWithCoverageOptions(
+			recs, expiringCommitments, coverageMap,
+			recommendations.PoolExpiryOptions{WindowDays: cfg.RebuyWindowDays, CoverageLookbackDays: coverageLookbackDays(cfg)})
 		if n > 0 {
 			AppLogger.Printf("  ⏰ Treating %d recs as partially uncovered (RIs expiring within %d days)\n", n, cfg.RebuyWindowDays)
 		}
@@ -643,8 +647,8 @@ func applyCoverageAndOverrides(recs []common.Recommendation, cfg Config, coverag
 // warned about rather than read as "no expiry".
 func logFamilyExpiry(expiry recommendations.FamilyExpiryReport, windowDays, lookbackDays int) {
 	if expiry.ExpiringNU > 0 {
-		// The exact deduction is capped by the covered and active NU per family
-		// (go#342); report the inputs rather than claim a net figure.
+		// ExpiringNU is the deduction actually applied after the per-family
+		// covered/active caps (go#342, go#533), so nothing is logged when it is 0.
 		AppLogger.Printf("  ⏰ RDS family sizing: %.0f normalized units of RIs expiring within %d days considered against family coverage; %.0f units of replacement RIs started in the last %d days credited back\n", expiry.ExpiringNU, windowDays, expiry.ReplacementNU, lookbackDays)
 	}
 	if expiry.Unusable > 0 {

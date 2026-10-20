@@ -97,8 +97,9 @@ var configureAzureCmd = &cobra.Command{
 
 This command stores your Azure credentials in AWS Secrets Manager for use by CUDly.
 
-You can provide credentials via flags or interactively:
-  cudly configure-azure --stack-name my-cudly --tenant-id xxx --client-id xxx --client-secret xxx --subscription-id xxx
+You can provide credentials via flags or interactively (the client secret is
+read from a prompt, so it stays out of shell history and process listings):
+  cudly configure-azure --stack-name my-cudly --tenant-id xxx --client-id xxx --subscription-id xxx
   cudly configure-azure --stack-name my-cudly --interactive
 
 To create an Azure Service Principal manually:
@@ -110,11 +111,14 @@ To create an Azure Service Principal manually:
 func init() {
 	rootCmd.AddCommand(configureAzureCmd)
 
-	configureAzureCmd.Flags().StringVar(&azureOpts.StackName, "stack-name", "cudly", "CUDly CloudFormation stack name")
+	configureAzureCmd.Flags().StringVar(&azureOpts.StackName, "stack-name", "cudly", "Name of the CUDly deployment; prefixes the AWS Secrets Manager secret (<stack-name>-AzureCredentials)")
 	configureAzureCmd.Flags().StringVar(&azureOpts.Profile, "profile", "", "AWS profile to use")
 	configureAzureCmd.Flags().StringVar(&azureOpts.TenantID, "tenant-id", "", "Azure AD Tenant ID")
 	configureAzureCmd.Flags().StringVar(&azureOpts.ClientID, "client-id", "", "Azure Service Principal Client ID")
 	configureAzureCmd.Flags().StringVar(&azureOpts.ClientSecret, "client-secret", "", "Azure Service Principal Client Secret")
+	if err := configureAzureCmd.Flags().MarkDeprecated("client-secret", "a secret on the command line leaks into shell history and process listings; omit it and enter it at the interactive Client Secret prompt"); err != nil {
+		panic(err)
+	}
 	configureAzureCmd.Flags().StringVar(&azureOpts.SubscriptionID, "subscription-id", "", "Azure Subscription ID")
 	configureAzureCmd.Flags().BoolVarP(&azureOpts.Interactive, "interactive", "i", false, "Prompt for credentials interactively")
 	configureAzureCmd.Flags().BoolVar(&azureOpts.SkipSetup, "skip-setup", false, "Skip Azure CLI setup commands (az login, create service principal)")
@@ -144,13 +148,9 @@ func storeAzureCredentials(ctx context.Context, store SecretsStore, stackName st
 	// Build expected secret name pattern
 	secretName := fmt.Sprintf("%s-AzureCredentials", stackName)
 
-	// Try to find the actual secret ARN by listing secrets
-	arns, err := store.ListSecrets(ctx, secretName)
-
-	// Use the ARN if found, otherwise use the name (will fail if secret doesn't exist)
-	secretID := secretName
-	if err == nil && len(arns) > 0 {
-		secretID = arns[0]
+	secretID, err := resolveSecretID(ctx, store, secretName)
+	if err != nil {
+		return err
 	}
 
 	// Marshal credentials to JSON
@@ -527,14 +527,16 @@ func azureStepCreateServicePrincipal(ctx context.Context, reader *bufio.Reader, 
 	fmt.Printf("%q role at subscription scope, via the Microsoft Graph SDK.\n", azureSPRoleName)
 	fmt.Println()
 	fmt.Printf("Create service principal %q with role %q at /subscriptions/%s?\n", azureSPName, azureSPRoleName, subscriptionID)
-	fmt.Printf("[R]un, [S]kip? ")
+	fmt.Printf("[r]un, [S]kip (default)? ")
 
 	choice, err := readTrimmedLine(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read service-principal choice: %w", err)
 	}
+	// Creating an Entra app, password and role assignment is not harmless, so
+	// Enter skips, like the GCP wizard.
 	choice = strings.ToLower(choice)
-	if choice != "r" && choice != "run" && choice != "" {
+	if choice != "r" && choice != "run" {
 		fmt.Println("Skipping Create Service Principal")
 		fmt.Println()
 		fmt.Println("Provide the appId, client secret and tenant ID for an existing")

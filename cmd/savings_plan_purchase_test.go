@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,6 +45,7 @@ func spRow(commit float64) common.Recommendation {
 }
 
 func TestRejectDuplicateSavingsPlanRows(t *testing.T) {
+	t.Parallel()
 	t.Run("identical rows rejected", func(t *testing.T) {
 		err := rejectDuplicateSavingsPlanRows([]common.Recommendation{spRow(1.5), spRow(1.5)})
 		require.Error(t, err)
@@ -202,6 +204,7 @@ func TestProcessCSVRegionPurchases_SavingsPlanRowWithEmptyRegionAndProvider(t *t
 }
 
 func TestClientRegionFor(t *testing.T) {
+	t.Parallel()
 	for _, svc := range []common.ServiceType{
 		common.ServiceSavingsPlansCompute, common.ServiceSavingsPlansEC2Instance,
 		common.ServiceSavingsPlansSageMaker, common.ServiceSavingsPlansDatabase,
@@ -221,6 +224,7 @@ func TestClientRegionFor(t *testing.T) {
 }
 
 func TestClientRegionFor_SavingsPlansAllNeverGetsARegion(t *testing.T) {
+	t.Parallel()
 	for _, recRegion := range []string{"", "us-east-1"} {
 		_, err := clientRegionFor(common.ServiceSavingsPlansAll, recRegion)
 		assert.Error(t, err, "rec region %q", recRegion)
@@ -229,6 +233,7 @@ func TestClientRegionFor_SavingsPlansAllNeverGetsARegion(t *testing.T) {
 }
 
 func TestPurchaseRegionLabel(t *testing.T) {
+	t.Parallel()
 	ec2sp := parserShapedSP()
 	ec2sp.Details = &common.SavingsPlanDetails{PlanType: "EC2Instance", Region: "eu-west-1"}
 	assert.Equal(t, "eu-west-1", purchaseRegionLabel(ec2sp, ""))
@@ -251,6 +256,7 @@ func validEC2InstanceSP() common.Recommendation {
 }
 
 func TestValidatePurchasePreconditions(t *testing.T) {
+	t.Parallel()
 	mut := func(base common.Recommendation, f func(*common.Recommendation)) common.Recommendation {
 		f(&base)
 		return base
@@ -298,21 +304,19 @@ func TestValidatePurchasePreconditions(t *testing.T) {
 	}
 }
 
-// TestValidatePurchasePreconditions_RejectsCommitmentThatRoundsToZero covers
-// issue #2163: the library sends the hourly commitment as "%.2f", so a positive
-// value below 0.005 would reach CreateSavingsPlan as "0.00".
-func TestValidatePurchasePreconditions_RejectsCommitmentThatRoundsToZero(t *testing.T) {
+// TestValidatePurchasePreconditions_CommitmentBounds mirrors the library's
+// spcommitment.Normalize bounds (0.001..1e6, positive, finite).
+func TestValidatePurchasePreconditions_CommitmentBounds(t *testing.T) {
+	t.Parallel()
 	withCommitment := func(c float64) common.Recommendation {
 		rec := parserShapedSP()
 		rec.Details = &common.SavingsPlanDetails{PlanType: "Compute", HourlyCommitment: c}
 		return rec
 	}
-	for _, c := range []float64{0.001, 0.004, 0.00499} {
-		err := validatePurchasePreconditions(withCommitment(c), "", defaultTestAccount)
-		require.Error(t, err, "commitment %v rounds to 0.00 and must be rejected", c)
-		assert.Contains(t, err.Error(), "0.00", "commitment %v", c)
+	for _, c := range []float64{0.0009, 0.00099, 0, -1, 1000000.1, math.NaN(), math.Inf(1)} {
+		assert.Error(t, validatePurchasePreconditions(withCommitment(c), "", defaultTestAccount), "commitment %v", c)
 	}
-	for _, c := range []float64{0.005, 0.01, 1.5} {
+	for _, c := range []float64{0.001, 0.004, 0.005, 1.239, 1.2345678, 1000000} {
 		assert.NoError(t, validatePurchasePreconditions(withCommitment(c), "", defaultTestAccount), "commitment %v", c)
 	}
 }
@@ -352,6 +356,7 @@ func TestProcessPurchaseLoop_DryRunReportsPreconditionFailureOnCSVShapedRows(t *
 }
 
 func TestCSVRoundTrip_SavingsPlanAndEC2DetailsSurviveWriteThenRead(t *testing.T) {
+	t.Parallel()
 	compute := parserShapedSP()
 	compute.Details = &common.SavingsPlanDetails{PlanType: "Compute", HourlyCommitment: 0.123456}
 	ec2sp := validEC2InstanceSP()
@@ -391,6 +396,7 @@ func TestCSVRoundTrip_SavingsPlanAndEC2DetailsSurviveWriteThenRead(t *testing.T)
 }
 
 func TestCSVWriter_AppendsDetailColumnsWithoutReorderingExistingOnes(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "report.csv")
 	require.NoError(t, writeMultiServiceCSVReport([]common.PurchaseResult{{Recommendation: parserShapedSP(), Timestamp: time.Now()}}, path))
 	f, err := os.Open(path)
@@ -399,8 +405,9 @@ func TestCSVWriter_AppendsDetailColumnsWithoutReorderingExistingOnes(t *testing.
 	rows, err := csv.NewReader(f).ReadAll()
 	require.NoError(t, err)
 	header := rows[0]
-	n := len(header) - len(csvDetailColumns)
-	assert.Equal(t, csvDetailColumns, header[n:])
+	n := len(header) - len(csvDetailColumns) - len(csvThresholdColumns)
+	assert.Equal(t, csvDetailColumns, header[n:n+len(csvDetailColumns)])
+	assert.Equal(t, csvThresholdColumns, header[n+len(csvDetailColumns):])
 	assert.Equal(t, "Service", header[0])
 	assert.Equal(t, "ProjectedCoverage", header[n-1])
 	for _, row := range rows {
@@ -409,6 +416,7 @@ func TestCSVWriter_AppendsDetailColumnsWithoutReorderingExistingOnes(t *testing.
 }
 
 func TestCSVReader_MalformedHourlyCommitmentRejected(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "in.csv")
 	content := "Service,Region,ResourceType,Count,PlanType,HourlyCommitment,Term,PaymentOption\nsavings-plans-compute,,Compute,1,Compute,abc,1yr,no-upfront\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))

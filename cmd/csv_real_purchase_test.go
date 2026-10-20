@@ -103,6 +103,8 @@ type csvPurchaseEnv struct {
 	// expectPurchaseFailure makes run require errPurchasesFailed (#2157):
 	// a real run with any failed purchase now returns it so the CLI exits non-zero.
 	expectPurchaseFailure bool
+	// cfgMod adjusts the Config run builds, e.g. to mimic the flags of a real invocation.
+	cfgMod func(*Config)
 }
 
 // newCSVPurchaseEnv wires the stub with the RDS and ElastiCache offering and
@@ -135,6 +137,9 @@ func newCSVPurchaseEnvFor(t *testing.T, csv string, fixtureSets ...map[string]aw
 		recs, err := loadRecommendationsFromCSV(csvPath)
 		require.NoError(t, err)
 		cfg := Config{CallerAccountID: defaultTestAccount, CSVOutput: filepath.Join(dir, report), AuditLog: filepath.Join(dir, "audit.jsonl")}
+		if env.cfgMod != nil {
+			env.cfgMod(&cfg)
+		}
 		err = runCSVPurchases(context.Background(), awsCfg, recs, false, cfg, "run-"+report)
 		if env.expectPurchaseFailure {
 			require.ErrorIs(t, err, errPurchasesFailed)
@@ -190,6 +195,7 @@ func firstRunRequests(rdsPurchases, cachePurchases int) map[string]int {
 // must never answer a purchase call, so a test that forgets to install its own
 // purchase fixture fails instead of "succeeding".
 func TestAWSFixturesHaveNoPurchaseOps(t *testing.T) {
+	t.Parallel()
 	for key := range awsFixtures {
 		assert.NotContains(t, key, "Purchase")
 	}
@@ -313,6 +319,7 @@ func TestCSVReplay_SecondRunBuysNothing(t *testing.T) {
 // The dedupe key adds the "elasticache:" engine prefix only for ProviderAWS,
 // so a CSV row must carry its provider or replays re-buy ElastiCache (#2228).
 func TestLoadRecommendationsFromCSV_StampsAWSProvider(t *testing.T) {
+	t.Parallel()
 	recs, err := loadRecommendationsFromCSV(writeTestRecommendationsCSV(t, csvPurchases))
 	require.NoError(t, err)
 	require.Len(t, recs, 2)
@@ -385,10 +392,35 @@ func testCSVReplayMemoryDB(t *testing.T, csv string) {
 }
 
 func TestLoadRecommendationsFromCSV_MemoryDBEngineIsCanonical(t *testing.T) {
+	t.Parallel()
 	for _, engine := range []string{"redis", "valkey", ""} {
 		recs, err := loadRecommendationsFromCSV(writeTestRecommendationsCSV(t, memdbCSVWithEngine(engine)))
 		require.NoError(t, err)
 		require.Len(t, recs, 1)
 		assert.Equal(t, &common.CacheDetails{Engine: "redis", NodeType: "db.t4g.small"}, recs[0].Details, "engine=%q", engine)
+	}
+}
+
+// TestCSVRealPurchase_IDLabelsAppliedCoverage pins #2248: the generated id's
+// sizing label must match the coverage the CSV run applied. Without --coverage
+// the flag default (80) is unused and the rows are bought at 100%. RDS uses the
+// generated id as ReservedDBInstanceId; the ElastiCache client names its own.
+func TestCSVRealPurchase_IDLabelsAppliedCoverage(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  func(*Config)
+		want string
+	}{
+		{"no --coverage buys 100%", func(c *Config) { c.Coverage = 80; c.CoverageFromDefault = true }, "-100pct-"},
+		{"explicit --coverage 100", func(c *Config) { c.Coverage = 100 }, "-100pct-"},
+		{"target-coverage wins", func(c *Config) { c.Coverage = 80; c.CoverageFromDefault = true; c.TargetCoverage = 100 }, "-100pct-"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newCSVPurchaseEnv(t)
+			env.cfgMod = tt.cfg
+			env.run("report1.csv")
+			assert.Contains(t, env.purchaseForm(t, rdsHost+" "+rdsPurchase).Get("ReservedDBInstanceId"), tt.want)
+		})
 	}
 }

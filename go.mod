@@ -57,7 +57,7 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/objx v0.5.3 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.63.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
@@ -82,10 +82,10 @@ require (
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/authorization/armauthorization/v2 v2.2.0
-	github.com/LeanerCloud/cloud-commitments-go/pkg v0.0.0-20261016175124-570d168c6bc7
-	github.com/LeanerCloud/cloud-commitments-go/providers/aws v0.0.0-20261013212804-9b35837e78d1
-	github.com/LeanerCloud/cloud-commitments-go/providers/azure v0.0.0-20261013212804-9b35837e78d1
-	github.com/LeanerCloud/cloud-commitments-go/providers/gcp v0.0.0-20261013212804-9b35837e78d1
+	github.com/LeanerCloud/cloud-commitments-go/pkg v0.0.0-20261020034927-dcb5ba0b4061
+	github.com/LeanerCloud/cloud-commitments-go/providers/aws v0.0.0-20261020034927-dcb5ba0b4061
+	github.com/LeanerCloud/cloud-commitments-go/providers/azure v0.0.0-20261020034927-dcb5ba0b4061
+	github.com/LeanerCloud/cloud-commitments-go/providers/gcp v0.0.0-20261020034927-dcb5ba0b4061
 	github.com/aws/aws-sdk-go-v2/service/organizations v1.45.3
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.40.3
 	github.com/aws/aws-sdk-go-v2/service/sts v1.33.17
