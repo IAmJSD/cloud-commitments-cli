@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `--input-csv` now rejects a row whose `Service` cell is not one of the service
+  names the CSV report writes (for example the `--services` alias
+  `elasticsearch`, `RDS` or `rds` with a trailing space), and a `Count` above
+  10000, failing the load with the row and column. Such a row used to load and
+  then be skipped mid-run with "Service client not yet implemented" (#379).
 - Savings Plans purchases now send the hourly commitment truncated to 5 decimals
   (at least 2 shown) instead of rounded to cents, and accept amounts from 0.001
   to 1,000,000, so a 0.001 to 0.004 commitment is no longer rejected (library
